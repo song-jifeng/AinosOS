@@ -1,0 +1,18 @@
+[Unit]
+Description=Ainos OS /proc/ai bridge daemon
+Documentation=https://github.com/song-jifeng/AinosOS
+Requires=ai-daemon.service
+After=ai-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/ai-proc-bridge -d
+ExecStop=/usr/bin/pkill ai-proc-bridge
+Restart=on-failure
+RestartSec=5
+PIDFile=/var/run/ai-proc-bridge.pid
+StandardOutput=append:/var/log/ainos/ai-proc-bridge.log
+StandardError=append:/var/log/ainos/ai-proc-bridge.log
+
+[Install]
+WantedBy=multi-user.target

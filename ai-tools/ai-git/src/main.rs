@@ -2,7 +2,6 @@
 // AI 增强的版本控制工具
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 
 mod diff;
 mod merge;
@@ -32,6 +31,9 @@ enum Commands {
         /// AI 自动解决冲突
         #[arg(short, long)]
         auto_resolve: bool,
+        /// 合并策略: ours|theirs|union|smart|manual
+        #[arg(short, long, default_value = "smart")]
+        strategy: String,
     },
     /// AI 语义 diff
     Diff {
@@ -62,8 +64,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Commit { auto, message } => {
             handle_commit(auto, message).await?;
         }
-        Commands::Merge { branch, auto_resolve } => {
-            handle_merge(&branch, auto_resolve).await?;
+        Commands::Merge { branch, auto_resolve, strategy } => {
+            handle_merge(&branch, auto_resolve, &strategy).await?;
         }
         Commands::Diff { range, semantic } => {
             handle_diff(range.as_deref(), semantic).await?;
@@ -158,8 +160,9 @@ async fn generate_commit_message(diff: &str) -> anyhow::Result<String> {
 }
 
 /// 处理合并
-async fn handle_merge(branch: &str, auto_resolve: bool) -> anyhow::Result<()> {
-    println!("[ai-git] Merging branch: {}", branch);
+async fn handle_merge(branch: &str, auto_resolve: bool, strategy: &str) -> anyhow::Result<()> {
+    println!("[ai-git] Merging branch: {} (strategy: {})", branch, strategy);
+    let strat = merge::MergeStrategy::from_str(strategy);
 
     if auto_resolve {
         // 先尝试自动合并
@@ -173,11 +176,11 @@ async fn handle_merge(branch: &str, auto_resolve: bool) -> anyhow::Result<()> {
         }
 
         // 合并冲突，AI 尝试解决
-        println!("[ai-git] Conflict detected, attempting AI resolution...");
+        println!("[ai-git] Conflict detected, attempting AI resolution (strategy: {})...", strategy);
         let conflicts = get_conflict_files()?;
         for file in &conflicts {
             println!("[ai-git] Resolving conflict in: {}", file);
-            resolve_conflict(file)?;
+            resolve_conflict(file, strat)?;
         }
 
         // 提交合并结果
@@ -223,10 +226,23 @@ fn get_conflict_files() -> anyhow::Result<Vec<String>> {
 }
 
 /// 解决冲突
-fn resolve_conflict(file: &str) -> anyhow::Result<()> {
+fn resolve_conflict(file: &str, strategy: merge::MergeStrategy) -> anyhow::Result<()> {
     let content = std::fs::read_to_string(file)?;
-    let resolved = merge::resolve_conflict(&content);
-    std::fs::write(file, resolved)?;
+    let result = merge::resolve_conflict_with_strategy(
+        &content, Some(strategy), Some(file));
+
+    println!("[ai-git]   {} conflicts: {} resolved, {} unresolved",
+             result.resolved + result.unresolved,
+             result.resolved, result.unresolved);
+
+    for res in &result.resolutions {
+        println!("[ai-git]   Conflict #{}: {} ({})",
+                 res.id,
+                 if res.resolved { "resolved" } else { "unresolved" },
+                 res.reason);
+    }
+
+    std::fs::write(file, &result.content)?;
     Ok(())
 }
 
