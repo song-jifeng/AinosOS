@@ -1,0 +1,46 @@
+# Rust
+target/
+Cargo.lock
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+*.out
+*.obj
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Runtime data
+data/
+logs/
+models/*.gguf
+models/*.ggml
+daemon.log
+*.log
+
+# SDK build
+userland/sdk/build/
+
+# Config with secrets (keep template)
+configs/*.local.toml

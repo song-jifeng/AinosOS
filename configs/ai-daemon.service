@@ -1,0 +1,32 @@
+[Unit]
+Description=Ainos AI Daemon - Native AI System Service
+Documentation=https://github.com/ainos-os/docs
+Wants=network.target network-online.target
+After=network.target network-online.target local-fs.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /var/run/ainos /var/lib/ainos /var/log/ainos
+ExecStart=/usr/lib/ainos/ai-daemon --config /etc/ainos/ai-daemon.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# 安全配置
+User=ainos
+Group=ainos
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ReadWritePaths=/var/lib/ainos /var/run/ainos /var/log/ainos
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=512
+MemoryMax=8G
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

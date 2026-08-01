@@ -1,0 +1,31 @@
+# Ainos AI Daemon Configuration
+# ============================================
+
+models_dir = "D:\\Ainos\\models"
+default_model = "qwen2.5-0.5b-instruct-q4.gguf"
+socket_path = "127.0.0.1:9500"
+
+# Local inference
+enable_local = true
+local_engine = "ggml"
+max_concurrent_inferences = 2
+model_cache_size_mb = 4096
+inference_timeout_secs = 120
+
+# Cloud fallback (Weelink Platform)
+enable_cloud = true
+cloud_api_url = "https://api.weelinking.com/v1"
+cloud_api_key = ""
+cloud_model = "gpt-5.6-sol"
+network_check_interval = 30
+cloud_fallback_confidence = 0.6
+
+# Context management
+context_dir = "D:\\Ainos\\data\\contexts"
+max_contexts = 1000
+context_ttl_days = 30
+
+# Logging
+log_level = "debug"
+audit_log = "D:\\Ainos\\logs\\audit.log"
+audit_all_requests = true

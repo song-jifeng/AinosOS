@@ -1,0 +1,363 @@
+```c
+/**
+ * ai-scheduler.h - Ainos OS AI调度器内核模块
+ * 
+ * 本头文件提供了AI驱动的抢占式优先级调度器的完整实现。
+ * 所有函数以静态内联方式提供，可直接包含到内核模块中使用。
+ * 
+ * 调度策略：基于多因素线性加权打分，选择得分最高的就绪任务执行。
+ * AI权重可通过外部模块动态调整以优化系统性能。
+ */
+
+#ifndef _AI_SCHEDULER_H
+#define _AI_SCHEDULER_H
+
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
+/* ---------- 常量定义 ---------- */
+#define AIOS_MAX_TASK_NAME_LEN   16
+
+/* 任务状态 */
+#define TASK_STATE_RUNNING   0
+#define TASK_STATE_READY     1
+#define TASK_STATE_BLOCKED   2
+#define TASK_STATE_SUSPENDED 3
+#define TASK_STATE_ZOMBIE    4
+
+/* 优先级范围 (模拟 Linux 0-139) */
+#define MIN_PRIORITY         0
+#define MAX_PRIORITY         139
+#define DEFAULT_PRIORITY     120
+
+/* NICE 值范围 */
+#define MIN_NICE             -20
+#define MAX_NICE             19
+
+/* ---------- 数据结构 ---------- */
+
+/**
+ * 任务控制块 (TCB)
+ */
+struct aios_task {
+    uint32_t tid;                          /* 任务ID */
+    char name[AIOS_MAX_TASK_NAME_LEN];     /* 任务名 */
+    
+    int priority;                          /* 当前动态优先级 */
+    int static_prio;                       /* 静态优先级 (nice 基础) */
+    int nice;                              /* 友好值 */
+    
+    float estimated_runtime;               /* AI 预测执行时间 (微秒) */
+    float deadline;                        /* 绝对截止时间 (系统总时间 + 相对截止), 0 表示无 */
+    float deadline_rel;                    /* 相对截止时间 (微秒) */
+    
+    uint64_t total_cpu_time;              /* 累计 CPU 时间 */
+    uint32_t state;                        /* 任务当前状态 */
+    
+    /* AI 特征值 */
+    float ai_cpu_weight;                   /* CPU 使用模式因子 */
+    float ai_io_weight;                    /* I/O 倾向因子 */
+    
+    struct aios_task *next;               /* 链表指针 */
+};
+
+/**
+ * 调度器控制结构
+ */
+struct aios_scheduler {
+    struct aios_task *ready_queue;         /* 就绪队列头 (单链表) */
+    struct aios_task *current;             /* 当前运行任务 */
+    
+    /* AI 线性模型权重 */
+    float ai_weight_prio;                  /* 优先级权重 */
+    float ai_weight_est_runtime;           /* 预测运行时间权重 (负相关) */
+    float ai_weight_deadline_urgency;      /* 截止期限紧迫度权重 (正相关) */
+    
+    uint64_t total_ticks;                  /* 自启动以来的时钟节拍数 */
+    uint64_t tick_period_us;               /* 每个节拍的微秒数 */
+    
+    bool need_reschedule;                  /* 是否需重新调度标志 */
+};
+
+/* ---------- 函数声明 (全部为 static inline) ---------- */
+
+/**
+ * 初始化调度器实例
+ */
+static inline void aios_scheduler_init(struct aios_scheduler *sched,
+                                       uint64_t tick_period_us)
+{
+    if (!sched) return;
+    sched->ready_queue = NULL;
+    sched->current = NULL;
+    sched->ai_weight_prio = 1.0f;
+    sched->ai_weight_est_runtime = -0.5f;     /* 预期时间短的任务更优先 */
+    sched->ai_weight_deadline_urgency = 2.0f;  /* 截止期急迫性最重要 */
+    sched->total_ticks = 0;
+    sched->tick_period_us = tick_period_us;
+    sched->need_reschedule = true;
+}
+
+/**
+ * 初始化任务控制块
+ */
+static inline void aios_task_init(struct aios_task *task,
+                                  uint32_t tid,
+                                  const char *name,
+                                  int nice,
+                                  float estimated_runtime,
+                                  float deadline_rel)
+{
+    if (!task) return;
+    task->tid = tid;
+    strncpy(task->name, name, AIOS_MAX_TASK_NAME_LEN - 1);
+    task->name[AIOS_MAX_TASK_NAME_LEN - 1] = '\0';
+    
+    task->nice = nice;
+    task->static_prio = DEFAULT_PRIORITY + nice;  /* 简单映射 */
+    if (task->static_prio < MIN_PRIORITY) task->static_prio = MIN_PRIORITY;
+    if (task->static_prio > MAX_PRIORITY) task->static_prio = MAX_PRIORITY;
+    task->priority = task->static_prio;
+    
+    task->estimated_runtime = estimated_runtime;
+    task->deadline_rel = deadline_rel;
+    task->deadline = 0.0f;                /* 待入队时根据当前时钟设置 */
+    task->total_cpu_time = 0;
+    task->state = TASK_STATE_READY;       /* 默认就绪 */
+    task->ai_cpu_weight = 1.0f;
+    task->ai_io_weight = 0.0f;
+    task->next = NULL;
+}
+
+/**
+ * 将任务加入就绪队列（按 priority 升序插入，数值越小优先级越高）
+ * 可替换为其他排序策略，此处简单按优先级排序。
+ */
+static inline void aios_scheduler_enqueue(struct aios_scheduler *sched,
+                                          struct aios_task *task)
+{
+    if (!sched || !task) return;
+    
+    task->state = TASK_STATE_READY;
+    task->next = NULL;
+    
+    /* 如果deadline_rel > 0，设置绝对截止时间 */
+    if (task->deadline_rel > 0.0f) {
+        task->deadline = (float)(sched->total_ticks * sched->tick_period_us) + task->deadline_rel;
+    }
+    
+    /* 有序插入：优先级数值越小，任务越靠前 */
+    struct aios_task **indirect = &sched->ready_queue;
+    while (*indirect && (*indirect)->priority <= task->priority) {
+        indirect = &(*indirect)->next;
+    }
+    task->next = *indirect;
+    *indirect = task;
+    
+    sched->need_reschedule = true;
+}
+
+/**
+ * 从就绪队列中移除指定任务
+ */
+static inline void aios_scheduler_dequeue(struct aios_scheduler *sched,
+                                          struct aios_task *task)
+{
+    if (!sched || !task) return;
+    
+    struct aios_task **indirect = &sched->ready_queue;
+    while (*indirect) {
+        if (*indirect == task) {
+            *indirect = task->next;
+            task->next = NULL;
+            /* 如果移除的是当前任务，需要特殊处理（但当前任务不在就绪队列） */
+            if (sched->current == task) {
+                sched->current = NULL;
+                sched->need_reschedule = true;
+            }
+            return;
+        }
+        indirect = &(*indirect)->next;
+    }
+}
+
+/**
+ * 计算 AI 调度得分
+ * 分数 = w1 * priority_normalized + w2 * (1.0 / (1.0 + estimated_runtime)) 
+ *        + w3 * deadline_urgency
+ * 所有因素归一化到大致 0~1 范围
+ */
+static inline float ai_calculate_score(struct aios_task *task,
+                                       const struct aios_scheduler *sched)
+{
+    if (!task || !sched) return -1e9f;
+    
+    /* 优先级归一化：数值越小优先级越高，转换为分数越大越好 */
+    float prio_score = (float)(MAX_PRIORITY - task->priority) / (MAX_PRIORITY - MIN_PRIORITY);
+    
+    /* 预测执行时间：使用反比例函数，时间越短分数越高 */
+    float est = task->estimated_runtime;
+    if (est < 1.0f) est = 1.0f;  /* 避免除零 */
+    float runtime_score = 1.0f / (1.0f + est / 1000.0f); /* 假设est单位为微秒，缩放到 ms 级 */
+    
+    /* 截止期限紧迫度：相对截止时间越近，紧迫度越高 */
+    float urgency = 0.0f;
+    if (task->deadline > 0.0f) {
+        float now = (float)(sched->total_ticks * sched->tick_period_us);
+        float remaining = task->deadline - now;
+        if (remaining < 0.0f) remaining = 0.0f;
+        /* 映射到0~1，remaining越小 urgency 越大 */
+        if (remaining < 10000.0f) { /* 10ms 以内 */
+            urgency = 1.0f - (remaining / 10000.0f);
+        } else {
+            urgency = 0.0f;
+        }
+    }
+    
+    float score = sched->ai_weight_prio * prio_score
+                + sched->ai_weight_est_runtime * runtime_score
+                + sched->ai_weight_deadline_urgency * urgency;
+    
+    return score;
+}
+
+/**
+ * 从就绪队列中挑选下一个运行任务
+ * 遍历队列，计算每个任务的AI得分，返回得分最高的任务。
+ * 如果所有任务得分都为负无穷（不可能，但保留处理），返回NULL。
+ */
+static inline struct aios_task *aios_scheduler_pick_next(struct aios_scheduler *sched)
+{
+    if (!sched) return NULL;
+    
+    struct aios_task *best = NULL;
+    float best_score = -1e9f;
+    
+    struct aios_task *t;
+    for (t = sched->ready_queue; t != NULL; t = t->next) {
+        if (t->state != TASK_STATE_READY)
+            continue;
+        float score = ai_calculate_score(t, sched);
+        if (score > best_score) {
+            best_score = score;
+            best = t;
+        }
+    }
+    
+    return best;
+}
+
+/**
+ * 时钟中断处理函数
+ * 每次节拍更新系统时间，并检查是否需要抢占或调度。
+ */
+static inline void aios_scheduler_tick(struct aios_scheduler *sched)
+{
+    if (!sched) return;
+    
+    sched->total_ticks++;
+    
+    /* 更新当前任务 CPU 时间（粗略，每个节拍累计 tick_period_us） */
+    if (sched->current) {
+        sched->current->total_cpu_time += sched->tick_period_us;
+    }
+    
+    /* 简单的抢占检查：如果存在更高得分的就绪任务，则设置重调度 */
+    if (sched->need_reschedule) {
+        /* 已经标记需要调度，等待 schedule() 调用 */
+        return;
+    }
+    
+    /* 比较当前任务与最优就绪任务的AI得分 */
+    if (sched->current) {
+        float cur_score = ai_calculate_score(sched->current, sched);
+        struct aios_task *next = aios_scheduler_pick_next(sched);
+        float next_score = (next) ? ai_calculate_score(next, sched) : -1e9f;
+        if (next_score > cur_score) {
+            sched->need_reschedule = true;
+        }
+    } else {
+        sched->need_reschedule = true;
+    }
+}
+
+/**
+ * 执行调度工作：选择新任务并切换上下文
+ * 在此模拟实现中，我们仅交换指针并打印信息。
+ * 实际内核需保存/恢复寄存器等。
+ */
+static inline void aios_scheduler_schedule(struct aios_scheduler *sched)
+{
+    if (!sched) return;
+    
+    struct aios_task *prev = sched->current;
+    struct aios_task *next = aios_scheduler_pick_next(sched);
+    
+    if (next == prev) {
+        /* 仍是同一任务，无需切换，清除标志 */
+        sched->need_reschedule = false;
+        return;
+    }
+    
+    /* 切换任务 */
+    if (prev) {
+        /* 如果之前运行的任务仍处于TASK_STATE_RUNNING，则将其改回READY并重新入队 */
+        if (prev->state == TASK_STATE_RUNNING) {
+            prev->state = TASK_STATE_READY;
+            /* 为了简化，直接将其放回就绪队列（有序插入） */
+            aios_scheduler_enqueue(sched, prev);
+        }
+    }
+    
+    if (next) {
+        /* 从就绪队列移除 next */
+        aios_scheduler_dequeue(sched, next);
+        next->state = TASK_STATE_RUNNING;
+        sched->current = next;
+        sched->need_reschedule = false;
+        
+        /* 模拟上下文切换：打印信息 */
+        // 内核打印函数可用 printk，这里用 printf 演示
+        // printf("Switch to task %s (tid=%u) score=%.2f\n",
+        //        next->name, next->tid, ai_calculate_score(next, sched));
+    } else {
+        /* 无任务可运行，进入 idle */
+        sched->current = NULL;
+        sched->need_reschedule = false;
+        // printf("No runnable task, entering idle\n");
+    }
+}
+
+/**
+ * 设置 AI 权重，提供外部接口动态调整调度策略
+ */
+static inline void aios_scheduler_set_weights(struct aios_scheduler *sched,
+                                              float w_prio,
+                                              float w_est,
+                                              float w_deadline)
+{
+    if (!sched) return;
+    sched->ai_weight_prio = w_prio;
+    sched->ai_weight_est_runtime = w_est;
+    sched->ai_weight_deadline_urgency = w_deadline;
+    sched->need_reschedule = true; /* 权重改变后重新评估 */
+}
+
+/**
+ * 更新任务的 AI 特征值，用于预测等
+ */
+static inline void aios_task_update_factors(struct aios_task *task,
+                                            float cpu_weight,
+                                            float io_weight,
+                                            float new_est_runtime)
+{
+    if (!task) return;
+    task->ai_cpu_weight = cpu_weight;
+    task->ai_io_weight = io_weight;
+    task->estimated_runtime = new_est_runtime;
+}
+
+#endif /* _AI_SCHEDULER_H */
+```

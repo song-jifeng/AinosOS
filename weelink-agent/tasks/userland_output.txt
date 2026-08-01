@@ -1,0 +1,616 @@
+以下是为 Ainos OS 设计的用户空间和桌面环境的完整代码。
+
+### 1. 完善 SDK 头文件
+
+```c
+// 文件名: sdk/ainos.h
+#ifndef AINOS_H
+#define AINOS_H
+
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ==========================================
+ * 基础类型与错误码
+ * ========================================== */
+typedef int ainos_status_t;
+
+#define AINOS_OK                  0
+#define AINOS_ERR_INVALID_PARAM  -1
+#define AINOS_ERR_NOT_INIT       -2
+#define AINOS_ERR_MODEL_NOT_FOUND-3
+#define AINOS_ERR_OUT_OF_MEMORY  -4
+#define AINOS_ERR_TIMEOUT        -5
+#define AINOS_ERR_INTERNAL       -99
+
+/* ==========================================
+ * 基础初始化与同步推理 API (已有)
+ * ========================================== */
+ainos_status_t ainos_init(const char *config_path);
+void ainos_shutdown(void);
+
+typedef struct {
+    char *text;
+    float confidence;
+} ainos_infer_result_t;
+
+ainos_status_t ainos_infer_sync(const char *prompt, ainos_infer_result_t **result);
+void ainos_free_result(ainos_infer_result_t *result);
+
+/* ==========================================
+ * 异步推理 API (新增)
+ * ========================================== */
+typedef int ainos_request_id_t;
+
+// 异步推理回调函数
+typedef void (*ainos_infer_callback_t)(ainos_request_id_t req_id, const char *result_text, float confidence, void *user_data);
+
+// 提交异步推理请求
+ainos_request_id_t ainos_infer_async(const char *prompt, ainos_infer_callback_t callback, void *user_data);
+
+// 取消正在进行的异步请求
+ainos_status_t ainos_infer_cancel(ainos_request_id_t req_id);
+
+// 等待特定的异步请求完成 (阻塞)
+ainos_status_t ainos_infer_wait(ainos_request_id_t req_id, int timeout_ms);
+
+/* ==========================================
+ * 模型管理 API (新增)
+ * ========================================== */
+typedef struct {
+    char name[64];
+    char version[32];
+    char description[256];
+    size_t size_mb;
+    bool is_loaded;
+    bool supports_streaming;
+} ainos_model_info_t;
+
+// 加载模型到内存/显存
+ainos_status_t ainos_model_load(const char *model_name);
+
+// 从内存/显存卸载模型
+ainos_status_t ainos_model_unload(const char *model_name);
+
+// 获取当前系统中可用的模型列表
+ainos_status_t ainos_model_list(ainos_model_info_t **models, int *count);
+
+// 释放模型列表内存
+void ainos_model_free_list(ainos_model_info_t *models);
+
+// 设置当前默认使用的模型
+ainos_status_t ainos_model_set_default(const char *model_name);
+
+// 获取当前默认模型名称
+ainos_status_t ainos_model_get_default(char *buffer, size_t buffer_size);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // AINOS_H
+```
+
+### 2. 基于 Wayland 的窗口管理器框架
+
+```c
+// 文件名: desktop/ainos-desktop.c
+#define _POSIX_C_SOURCE 200112L
+#include <assert.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <wayland-server-core.h>
+#include <wlr/backend.h>
+#include <wlr/render/wlr_renderer.h>
+#include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/util/log.h>
+
+/* 窗口视图结构 */
+struct ainos_view {
+    struct wl_list link;
+    struct ainos_server *server;
+    struct wlr_xdg_surface *xdg_surface;
+    
+    struct wl_listener map;
+    struct wl_listener unmap;
+    struct wl_listener destroy;
+    struct wl_listener request_move;
+    struct wl_listener request_resize;
+    
+    bool mapped;
+    int x, y;
+};
+
+/* 服务器/合成器主结构 */
+struct ainos_server {
+    struct wl_display *wl_display;
+    struct wlr_backend *backend;
+    struct wlr_renderer *renderer;
+    
+    struct wlr_compositor *compositor;
+    struct wlr_output_layout *output_layout;
+    struct wlr_xdg_shell *xdg_shell;
+    
+    struct wl_list views;
+    
+    struct wl_listener new_output;
+    struct wl_listener new_xdg_surface;
+};
+
+/* --- 事件处理回调 --- */
+
+static void xdg_toplevel_map(struct wl_listener *listener, void *data) {
+    struct ainos_view *view = wl_container_of(listener, view, map);
+    view->mapped = true;
+    // 这里可以添加焦点管理和渲染逻辑
+    wlr_log(WLR_INFO, "Window mapped: %s", view->xdg_surface->toplevel->title);
+}
+
+static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {
+    struct ainos_view *view = wl_container_of(listener, view, unmap);
+    view->mapped = false;
+}
+
+static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
+    struct ainos_view *view = wl_container_of(listener, view, destroy);
+    wl_list_remove(&view->map.link);
+    wl_list_remove(&view->unmap.link);
+    wl_list_remove(&view->destroy.link);
+    wl_list_remove(&view->link);
+    free(view);
+}
+
+static void server_new_xdg_surface(struct wl_listener *listener, void *data) {
+    struct ainos_server *server = wl_container_of(listener, server, new_xdg_surface);
+    struct wlr_xdg_surface *xdg_surface = data;
+
+    if (xdg_surface->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL) {
+        return;
+    }
+
+    struct ainos_view *view = calloc(1, sizeof(struct ainos_view));
+    view->server = server;
+    view->xdg_surface = xdg_surface;
+    
+    // 初始位置
+    view->x = 50;
+    view->y = 50;
+
+    view->map.notify = xdg_toplevel_map;
+    wl_signal_add(&xdg_surface->events.map, &view->map);
+    
+    view->unmap.notify = xdg_toplevel_unmap;
+    wl_signal_add(&xdg_surface->events.unmap, &view->unmap);
+    
+    view->destroy.notify = xdg_toplevel_destroy;
+    wl_signal_add(&xdg_surface->events.destroy, &view->destroy);
+
+    wl_list_insert(&server->views, &view->link);
+}
+
+static void server_new_output(struct wl_listener *listener, void *data) {
+    struct ainos_server *server = wl_container_of(listener, server, new_output);
+    struct wlr_output *wlr_output = data;
+
+    // 设置首选模式
+    if (!wl_list_empty(&wlr_output->modes)) {
+        struct wlr_output_mode *mode = wl_container_of(wlr_output->modes.prev, mode, link);
+        wlr_output_set_mode(wlr_output, mode);
+        wlr_output_enable(wlr_output, true);
+        if (!wlr_output_commit(wlr_output)) {
+            return;
+        }
+    }
+
+    wlr_output_layout_add_auto(server->output_layout, wlr_output);
+}
+
+int main(int argc, char **argv) {
+    wlr_log_init(WLR_DEBUG, NULL);
+
+    struct ainos_server server = {0};
+    wl_list_init(&server.views);
+
+    server.wl_display = wl_display_create();
+    assert(server.wl_display);
+
+    server.backend = wlr_backend_autocreate(server.wl_display, NULL);
+    assert(server.backend);
+
+    server.renderer = wlr_renderer_autocreate(server.backend);
+    assert(server.renderer);
+    wlr_renderer_init_wl_display(server.renderer, server.wl_display);
+
+    server.compositor = wlr_compositor_create(server.wl_display, server.renderer);
+    wlr_data_device_manager_create(server.wl_display);
+
+    server.output_layout = wlr_output_layout_create();
+    
+    server.xdg_shell = wlr_xdg_shell_create(server.wl_display);
+    
+    // 注册事件监听
+    server.new_output.notify = server_new_output;
+    wl_signal_add(&server.backend->events.new_output, &server.new_output);
+
+    server.new_xdg_surface.notify = server_new_xdg_surface;
+    wl_signal_add(&server.xdg_shell->events.new_surface, &server.new_xdg_surface);
+
+    const char *socket = wl_display_add_socket_auto(server.wl_display);
+    if (!socket) {
+        wlr_backend_destroy(server.backend);
+        return 1;
+    }
+
+    wlr_log(WLR_INFO, "Ainos Desktop Wayland compositor running on WAYLAND_DISPLAY=%s", socket);
+
+    if (!wlr_backend_start(server.backend)) {
+        wl_display_destroy(server.wl_display);
+        return 1;
+    }
+
+    setenv("WAYLAND_DISPLAY", socket, true);
+    
+    // 主事件循环
+    wlr_log(WLR_INFO, "Starting Ainos Desktop compositor...");
+    wl_display_run(server.wl_display);
+
+    wlr_log(WLR_INFO, "Shutting down Ainos Desktop...");
+    wl_display_destroy_clients(server.wl_display);
+    wl_display_destroy(server.wl_display);
+    return 0;
+}
+```
+
+### 3. 系统任务栏
+
+```c
+// 文件名: desktop/ainos-panel.c
+#include <gtk/gtk.h>
+#include <glib.h>
+#include <time.h>
+#include <stdio.h>
+
+#define PANEL_HEIGHT 36
+#define ICON_SIZE 24
+
+/* 更新时钟 */
+static gboolean update_clock(gpointer user_data) {
+    GtkLabel *clock_label = GTK_LABEL(user_data);
+    time_t rawtime;
+    struct tm * timeinfo;
+    char buffer[80];
+
+    time (&rawtime);
+    timeinfo = localtime (&rawtime);
+    strftime (buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", timeinfo);
+
+    gtk_label_set_text(clock_label, buffer);
+    return G_SOURCE_CONTINUE;
+}
+
+/* 启动器按钮点击事件 */
+static void on_app_launcher_clicked(GtkButton *button, gpointer user_data) {
+    g_print("Ainos App Launcher clicked. Opening application menu...\n");
+    // 这里可以调用 Ainos SDK 或 DBus 打开应用菜单
+}
+
+/* 系统设置按钮点击事件 */
+static void on_settings_clicked(GtkButton *button, gpointer user_data) {
+    g_print("Opening Ainos Control Panel...\n");
+    // 启动 control_panel.py
+    g_spawn_command_line_async("python3 /opt/ainos/userland/control-panel/control_panel.py", NULL);
+}
+
+static void activate(GtkApplication *app, gpointer user_data) {
+    GtkWidget *window;
+    GtkWidget *box;
+    GtkWidget *launcher_btn;
+    GtkWidget *settings_btn;
+    GtkWidget *clock_label;
+    GtkWidget *spacer;
+
+    window = gtk_application_window_new(app);
+    gtk_window_set_title(GTK_WINDOW(window), "Ainos Panel");
+    gtk_window_set_default_size(GTK_WINDOW(window), 1920, PANEL_HEIGHT);
+    
+    // 设置为置顶和固定窗口 (Wayland/X11 兼容的 Dock 属性)
+    gtk_window_set_type_hint(GTK_WINDOW(window), GDK_WINDOW_TYPE_HINT_DOCK);
+    gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
+    gtk_window_stick(GTK_WINDOW(window));
+    gtk_window_set_skip_taskbar_hint(GTK_WINDOW(window), TRUE);
+    gtk_window_set_skip_pager_hint(GTK_WINDOW(window), TRUE);
+
+    // 主水平布局
+    box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_container_add(GTK_CONTAINER(window), box);
+    gtk_widget_set_margin_start(box, 10);
+    gtk_widget_set_margin_end(box, 10);
+
+    // 1. AI 启动器按钮
+    launcher_btn = gtk_button_new_with_label("🚀 Ainos AI");
+    g_signal_connect(launcher_btn, "clicked", G_CALLBACK(on_app_launcher_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(box), launcher_btn, FALSE, FALSE, 0);
+
+    // 2. 弹性空白区域
+    spacer = gtk_label_new("");
+    gtk_box_pack_start(GTK_BOX(box), spacer, TRUE, TRUE, 0);
+
+    // 3. 系统状态/设置
+    settings_btn = gtk_button_new_with_label("⚙️ Settings");
+    g_signal_connect(settings_btn, "clicked", G_CALLBACK(on_settings_clicked), NULL);
+    gtk_box_pack_end(GTK_BOX(box), settings_btn, FALSE, FALSE, 0);
+
+    // 4. 时钟
+    clock_label = gtk_label_new("0000-00-00 00:00:00");
+    gtk_box_pack_end(GTK_BOX(box), clock_label, FALSE, FALSE, 5);
+    
+    // 每秒更新时钟
+    g_timeout_add_seconds(1, update_clock, clock_label);
+    update_clock(clock_label); // 立即更新一次
+
+    gtk_widget_show_all(window);
+}
+
+int main(int argc, char **argv) {
+    GtkApplication *app;
+    int status;
+
+    app = gtk_application_new("os.ainos.panel", G_APPLICATION_FLAGS_NONE);
+    g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
+    status = g_application_run(G_APPLICATION(app), argc, argv);
+    g_object_unref(app);
+
+    return status;
+}
+```
+
+### 4. 桌面环境构建脚本
+
+```cmake
+# 文件名: desktop/CMakeLists.txt
+cmake_minimum_required(VERSION 3.10)
+project(ainos-desktop-env C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+# 查找依赖
+find_package(PkgConfig REQUIRED)
+
+# Wayland Compositor 依赖 (wlroots)
+pkg_check_modules(WLR REQUIRED wlroots)
+pkg_check_modules(WAYLAND_SERVER REQUIRED wayland-server)
+pkg_check_modules(PIXMAN REQUIRED pixman-1)
+
+# Panel 依赖 (GTK3)
+pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+
+# 编译 Ainos Desktop (Wayland Compositor)
+add_executable(ainos-desktop ainos-desktop.c)
+target_include_directories(ainos-desktop PRIVATE 
+    ${WLR_INCLUDE_DIRS} 
+    ${WAYLAND_SERVER_INCLUDE_DIRS}
+    ${PIXMAN_INCLUDE_DIRS}
+)
+target_link_libraries(ainos-desktop 
+    ${WLR_LIBRARIES} 
+    ${WAYLAND_SERVER_LIBRARIES}
+    ${PIXMAN_LIBRARIES}
+    m
+)
+target_compile_options(ainos-desktop PRIVATE ${WLR_CFLAGS_OTHER})
+
+# 编译 Ainos Panel (任务栏)
+add_executable(ainos-panel ainos-panel.c)
+target_include_directories(ainos-panel PRIVATE ${GTK3_INCLUDE_DIRS})
+target_link_libraries(ainos-panel ${GTK3_LIBRARIES})
+target_compile_options(ainos-panel PRIVATE ${GTK3_CFLAGS_OTHER})
+
+# 安装规则
+install(TARGETS ainos-desktop ainos-panel DESTINATION bin)
+```
+
+### 5. AI 代码生成工具
+
+```python
+#!/usr/bin/env python3
+# 文件名: ai-tools/ai-code-generator.py
+
+import argparse
+import sys
+import json
+import os
+
+# 模拟调用 Ainos 本地 AI 推理服务
+# 实际生产中应通过 Ainos SDK (C/Python bindings) 或 HTTP API 调用
+def call_ainos_inference(prompt: str, language: str, max_tokens: int) -> str:
+    """
+    调用 Ainos OS 本地 AI 服务生成代码。
+    这里使用模拟逻辑，实际应替换为 ainos_infer_sync 或 HTTP 请求。
+    """
+    # 模拟 API 端点
+    api_url = "http://127.0.0.1:8080/v1/code/generate"
+    
+    # 实际代码示例 (使用 requests):
+    # import requests
+    # payload = {"prompt": prompt, "language": language, "max_tokens": max_tokens}
+    # response = requests.post(api_url, json=payload)
+    # return response.json().get("code", "")
+    
+    # 模拟返回
+    mock_code = f"""// Generated by Ainos AI Code Generator
+// Language: {language}
+// Prompt: {prompt}
+
+#include <stdio.h>
+
+int main() {{
+    printf("Hello from Ainos OS!\\n");
+    // TODO: Implement logic for: {prompt}
+    return 0;
+}}
+"""
+    return mock_code
+
+def main():
+    parser = argparse.ArgumentParser(description="Ainos OS AI Code Generator")
+    parser.add_argument("prompt", type=str, help="Natural language description of the code to generate")
+    parser.add_argument("-l", "--language", type=str, default="c", help="Target programming language (default: c)")
+    parser.add_argument("-o", "--output", type=str, help="Output file path (default: stdout)")
+    parser.add_argument("-t", "--tokens", type=int, default=1024, help="Max tokens to generate (default: 1024)")
+    
+    args = parser.parse_args()
+
+    print(f"[Ainos AI] Generating {args.language} code for: '{args.prompt}'...", file=sys.stderr)
+    
+    try:
+        generated_code = call_ainos_inference(args.prompt, args.language, args.tokens)
+        
+        if args.output:
+            with open(args.output, 'w', encoding='utf-8') as f:
+                f.write(generated_code)
+            print(f"[Ainos AI] Code successfully saved to {args.output}", file=sys.stderr)
+        else:
+            print(generated_code)
+            
+    except Exception as e:
+        print(f"[Ainos AI Error] Failed to generate code: {e}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+```
+
+### 6. 开发者指南
+
+```markdown
+# 文件名: docs/developer-guide.md
+# Ainos OS 开发者指南
+
+欢迎来到 Ainos OS 开发者指南！本文档将帮助您了解 Ainos OS 的架构，并指导您如何使用 SDK 开发原生应用、扩展桌面环境以及集成 AI 工具。
+
+## 1. 系统架构概览
+
+Ainos OS 是一个以 AI 为核心的现代操作系统，其用户空间架构分为以下几个核心层：
+
+- **Wayland Compositor (`ainos-desktop`)**: 基于 `wlroots` 构建的显示服务器，负责窗口管理、输入处理和图形渲染。
+- **桌面环境组件 (`ainos-panel`)**: 基于 GTK3 构建的系统面板，提供应用启动、系统状态和 AI 快捷入口。
+- **Ainos SDK (`libainos`)**: 提供统一的 C API，允许应用程序无缝调用本地 AI 模型进行推理、代码生成和数据分析。
+- **AI 工具链 (`ai-tools`)**: 包含命令行工具和守护进程，用于模型管理、代码生成和系统级 AI 任务调度。
+
+## 2. 环境搭建
+
+### 2.1 安装依赖
+在构建用户空间组件前，请确保安装了以下依赖：
+```bash
+# Arch Linux / Ainos OS
+sudo pacman -S wayland wlroots gtk3 cmake pkgconf python-requests
+
+# Ubuntu / Debian
+sudo apt install libwayland-dev wlroots-dev libgtk-3-dev cmake pkg-config python3-requests
+```
+
+### 2.2 编译 SDK
+```bash
+cd D:/Ainos/userland/sdk
+make
+sudo make install
+```
+
+### 2.3 编译桌面环境
+```bash
+cd D:/Ainos/userland/desktop
+mkdir build && cd build
+cmake ..
+make
+```
+
+## 3. 使用 Ainos SDK
+
+Ainos SDK 提供了同步和异步两种推理模式，以及完善的模型管理 API。
+
+### 3.1 同步推理示例
+```c
+#include <ainos.h>
+#include <stdio.h>
+
+int main() {
+    ainos_init("/etc/ainos/config.json");
+    
+    ainos_infer_result_t *result = NULL;
+    ainos_status_t status = ainos_infer_sync("请解释量子纠缠", &result);
+    
+    if (status == AINOS_OK && result) {
+        printf("AI Response: %s\n", result->text);
+        ainos_free_result(result);
+    }
+    
+    ainos_shutdown();
+    return 0;
+}
+```
+
+### 3.2 异步推理示例
+对于耗时较长的任务（如代码生成、长文本分析），推荐使用异步 API 以避免阻塞 UI 线程：
+```c
+void on_infer_done(ainos_request_id_t req_id, const char *text, float conf, void *data) {
+    printf("Async Result: %s\n", text);
+}
+
+// 提交任务
+ainos_request_id_t req = ainos_infer_async("生成一个快速排序算法", on_infer_done, NULL);
+```
+
+## 4. 桌面环境开发
+
+### 4.1 窗口管理器 (Compositor)
+`ainos-desktop` 使用 `wlroots` 库。要添加新的窗口特效或管理逻辑，请修改 `desktop/ainos-desktop.c` 中的 `xdg_toplevel_map` 和渲染循环。
+
+### 4.2 任务栏与面板
+`ainos-panel` 使用 GTK3 开发。要添加新的系统托盘图标或小程序 (Applet)，请修改 `desktop/ainos-panel.c` 中的 `activate` 函数，使用 GTK 布局容器添加新组件。
+
+## 5. AI 工具集成
+
+### 5.1 使用代码生成器
+Ainos 提供了强大的命令行代码生成工具：
+```bash
+# 生成 C 语言代码并输出到终端
+python3 ai-tools/ai-code-generator.py "实现一个链表反转函数" -l c
+
+# 生成 Python 代码并保存到文件
+python3 ai-tools/ai-code-generator.py "编写一个爬虫脚本" -l python -o scraper.py
+```
+
+### 5.2 模型管理
+使用 SDK 的模型管理 API 可以在运行时动态加载或卸载 AI 模型，以优化内存和显存使用：
+```c
+ainos_model_info_t *models;
+int count;
+ainos_model_list(&models, &count);
+
+for (int i = 0; i < count; i++) {
+    printf("Model: %s, Loaded: %s\n", models[i].name, models[i].is_loaded ? "Yes" : "No");
+}
+ainos_model_free_list(models);
+```
+
+## 6. 贡献指南
+
+1. Fork 本仓库。
+2. 创建您的特性分支 (`git checkout -b feature/AmazingFeature`)。
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)。
+4. 推送到分支 (`git push origin feature/AmazingFeature`)。
+5. 开启一个 Pull Request。
+
+---
+*Ainos OS - Empowering the Future with AI.*
+```

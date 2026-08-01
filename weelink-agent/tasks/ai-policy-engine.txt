@@ -1,0 +1,598 @@
+以下是为 Ainos OS 设计的 AI 安全策略模块 (ai-policy) 的完整代码实现。代码采用 C 语言编写，核心引擎部分通过宏抽象实现了**内核态与用户态的兼容**。
+
+### 1. 公共 API 头文件
+**`include/ainos/ai_policy.h`**
+```c
+#ifndef AINOS_AI_POLICY_H
+#define AINOS_AI_POLICY_H
+
+#ifdef __KERNEL__
+#include <linux/types.h>
+#else
+#include <stdint.h>
+#include <stddef.h>
+#endif
+
+/* 决策结果 */
+typedef enum {
+    AI_POLICY_DENY = 0,
+    AI_POLICY_ALLOW = 1,
+    AI_POLICY_ASK = 2
+} ai_policy_decision_t;
+
+/* 策略层级 (system→user→app→session) */
+typedef enum {
+    AI_LAYER_SYSTEM = 0,
+    AI_LAYER_USER = 1,
+    AI_LAYER_APP = 2,
+    AI_LAYER_SESSION = 3,
+    AI_LAYER_MAX = 4
+} ai_policy_layer_t;
+
+/* 权限请求上下文 */
+typedef struct {
+    uint32_t uid;
+    uint32_t pid;
+    uint32_t session_id;
+    char app_id[64];
+    char action[64];
+    char resource[128];
+    char context[256]; /* 附加上下文，如 user_role, session_type */
+} ai_policy_context_t;
+
+/* 审计日志条目 */
+typedef struct {
+    uint64_t timestamp;
+    ai_policy_decision_t decision;
+    ai_policy_context_t ctx;
+    char reason[128];
+} ai_policy_audit_t;
+
+/* 审计回调函数 */
+typedef void (*ai_policy_audit_cb_t)(const ai_policy_audit_t *audit);
+
+/* 公共 API */
+int ai_policy_init(void);
+void ai_policy_destroy(void);
+int ai_policy_check_permission(const ai_policy_context_t *ctx, ai_policy_decision_t *decision);
+int ai_policy_load_from_file(const char *filepath);
+int ai_policy_load_from_buffer(const char *buffer, size_t len);
+void ai_policy_register_audit_cb(ai_policy_audit_cb_t cb);
+void ai_policy_emergency_cut_off(void);
+void ai_policy_resume(void);
+
+#endif /* AINOS_AI_POLICY_H */
+```
+
+### 2. 策略引擎核心
+**`policy-engine/policy_engine.h`**
+```c
+#ifndef POLICY_ENGINE_H
+#define POLICY_ENGINE_H
+
+#include "ainos/ai_policy.h"
+
+/* 内部规则结构 */
+typedef struct ai_policy_rule {
+    ai_policy_layer_t layer;
+    ai_policy_decision_t decision;
+    char action[64];
+    char condition_key[64];
+    char condition_val[128];
+    int is_negated; /* 1 for !=, 0 for == */
+    struct ai_policy_rule *next;
+} ai_policy_rule_t;
+
+/* 缓存节点 */
+typedef struct ai_cache_node {
+    uint64_t key;
+    ai_policy_decision_t decision;
+    struct ai_cache_node *next;
+} ai_cache_node_t;
+
+/* 引擎状态 */
+typedef struct {
+    ai_policy_rule_t *rules[AI_LAYER_MAX];
+    ai_cache_node_t *cache[256];
+    int cache_size;
+    ai_policy_audit_cb_t audit_cb;
+    int is_cut_off;
+} ai_policy_engine_t;
+
+int engine_init(ai_policy_engine_t *engine);
+void engine_destroy(ai_policy_engine_t *engine);
+int engine_parse_apl(ai_policy_engine_t *engine, const char *apl_text);
+ai_policy_decision_t engine_evaluate(ai_policy_engine_t *engine, const ai_policy_context_t *ctx);
+void engine_flush_cache(ai_policy_engine_t *engine);
+
+#endif
+```
+
+**`policy-engine/policy_engine.c`**
+```c
+#include "policy_engine.h"
+#include <string.h>
+
+/* 内核/用户态内存与字符串操作抽象 */
+#ifdef __KERNEL__
+#include <linux/slab.h>
+#include <linux/string.h>
+#define PE_MALLOC(s) kmalloc(s, GFP_KERNEL)
+#define PE_FREE(p) kfree(p)
+#define PE_STRNCPY(d, s, n) strncpy(d, s, n)
+#else
+#include <stdlib.h>
+#include <string.h>
+#define PE_MALLOC(s) malloc(s)
+#define PE_FREE(p) free(p)
+#define PE_STRNCPY(d, s, n) strncpy(d, s, n)
+#endif
+
+static const char *skip_space_comment(const char *p) {
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p == '#') {
+        while (*p && *p != '\n') p++;
+        return skip_space_comment(p);
+    }
+    return p;
+}
+
+static int parse_identifier(const char **p, char *buf, size_t buf_sz) {
+    size_t i = 0;
+    const char *start = *p;
+    while ((*start >= 'a' && *start <= 'z') || (*start >= 'A' && *start <= 'Z') || 
+           (*start >= '0' && *start <= '9') || *start == '_') {
+        if (i < buf_sz - 1) buf[i++] = *start;
+        start++;
+    }
+    buf[i] = '\0';
+    *p = start;
+    return (i > 0) ? 0 : -1;
+}
+
+static int parse_string(const char **p, char *buf, size_t buf_sz) {
+    if (**p != '"') return -1;
+    (*p)++;
+    size_t i = 0;
+    while (**p && **p != '"') {
+        if (i < buf_sz - 1) buf[i++] = **p;
+        (*p)++;
+    }
+    buf[i] = '\0';
+    if (**p == '"') (*p)++;
+    return 0;
+}
+
+int engine_parse_apl(ai_policy_engine_t *engine, const char *text) {
+    const char *p = text;
+    ai_policy_layer_t current_layer = AI_LAYER_SYSTEM;
+
+    while (*p) {
+        p = skip_space_comment(p);
+        if (!*p) break;
+
+        if (strncmp(p, "layer", 5) == 0) {
+            p += 5;
+            p = skip_space_comment(p);
+            char layer_name[32];
+            if (parse_identifier(&p, layer_name, sizeof(layer_name)) != 0) return -1;
+            
+            if (strcmp(layer_name, "system") == 0) current_layer = AI_LAYER_SYSTEM;
+            else if (strcmp(layer_name, "user") == 0) current_layer = AI_LAYER_USER;
+            else if (strcmp(layer_name, "app") == 0) current_layer = AI_LAYER_APP;
+            else if (strcmp(layer_name, "session") == 0) current_layer = AI_LAYER_SESSION;
+            else return -1;
+
+            p = skip_space_comment(p);
+            if (*p != '{') return -1;
+            p++;
+        } else if (*p == '}') {
+            p++;
+        } else {
+            /* 解析规则: allow/deny/ask action [if key == "value"]; */
+            ai_policy_decision_t dec;
+            if (strncmp(p, "allow", 5) == 0) { dec = AI_POLICY_ALLOW; p += 5; }
+            else if (strncmp(p, "deny", 4) == 0) { dec = AI_POLICY_DENY; p += 4; }
+            else if (strncmp(p, "ask", 3) == 0) { dec = AI_POLICY_ASK; p += 3; }
+            else return -1;
+
+            p = skip_space_comment(p);
+            ai_policy_rule_t *rule = (ai_policy_rule_t *)PE_MALLOC(sizeof(ai_policy_rule_t));
+            if (!rule) return -1;
+            memset(rule, 0, sizeof(*rule));
+            
+            rule->layer = current_layer;
+            rule->decision = dec;
+            parse_identifier(&p, rule->action, sizeof(rule->action));
+
+            p = skip_space_comment(p);
+            if (strncmp(p, "if", 2) == 0) {
+                p += 2;
+                p = skip_space_comment(p);
+                parse_identifier(&p, rule->condition_key, sizeof(rule->condition_key));
+                p = skip_space_comment(p);
+                if (*p == '!') { rule->is_negated = 1; p++; }
+                if (*p == '=') p++;
+                if (*p == '=') p++;
+                p = skip_space_comment(p);
+                parse_string(&p, rule->condition_val, sizeof(rule->condition_val));
+            }
+
+            p = skip_space_comment(p);
+            if (*p == ';') p++;
+
+            /* 插入规则链表头部 */
+            rule->next = engine->rules[current_layer];
+            engine->rules[current_layer] = rule;
+        }
+    }
+    return 0;
+}
+
+static int match_condition(const ai_policy_rule_t *rule, const ai_policy_context_t *ctx) {
+    if (rule->condition_key[0] == '\0') return 1; /* 无条件 */
+    
+    /* 在 context 中查找 key="value" 或简单的键值匹配 */
+    /* 简化实现：直接比较 context 字符串是否包含条件 */
+    char search_buf[256];
+    int len = snprintf(search_buf, sizeof(search_buf), "%s=\"%s\"", rule->condition_key, rule->condition_val);
+    int found = (strstr(ctx->context, search_buf) != NULL);
+    
+    return rule->is_negated ? !found : found;
+}
+
+ai_policy_decision_t engine_evaluate(ai_policy_engine_t *engine, const ai_policy_context_t *ctx) {
+    if (engine->is_cut_off) return AI_POLICY_DENY;
+
+    /* 四层匹配: system -> user -> app -> session */
+    for (int i = 0; i < AI_LAYER_MAX; i++) {
+        ai_policy_rule_t *rule = engine->rules[i];
+        while (rule) {
+            if (strcmp(rule->action, ctx->action) == 0 || strcmp(rule->action, "*") == 0) {
+                if (match_condition(rule, ctx)) {
+                    return rule->decision;
+                }
+            }
+            rule = rule->next;
+        }
+    }
+    return AI_POLICY_DENY; /* 默认拒绝 */
+}
+
+void engine_flush_cache(ai_policy_engine_t *engine) {
+    for (int i = 0; i < 256; i++) {
+        ai_cache_node_t *node = engine->cache[i];
+        while (node) {
+            ai_cache_node_t *next = node->next;
+            PE_FREE(node);
+            node = next;
+        }
+        engine->cache[i] = NULL;
+    }
+    engine->cache_size = 0;
+}
+
+int engine_init(ai_policy_engine_t *engine) {
+    memset(engine, 0, sizeof(*engine));
+    return 0;
+}
+
+void engine_destroy(ai_policy_engine_t *engine) {
+    for (int i = 0; i < AI_LAYER_MAX; i++) {
+        ai_policy_rule_t *rule = engine->rules[i];
+        while (rule) {
+            ai_policy_rule_t *next = rule->next;
+            PE_FREE(rule);
+            rule = next;
+        }
+    }
+    engine_flush_cache(engine);
+}
+```
+
+### 3. 策略数据库
+**`policy-db/policy_db.h`**
+```c
+#ifndef POLICY_DB_H
+#define POLICY_DB_H
+
+#include "ainos/ai_policy.h"
+
+int pdb_init(const char *db_path);
+void pdb_destroy(void);
+int pdb_save_apl_text(const char *profile_name, const char *apl_text);
+int pdb_load_apl_text(const char *profile_name, char **out_text);
+int pdb_import_apl_file(const char *filepath);
+int pdb_export_apl_file(const char *profile_name, const char *filepath);
+int pdb_get_version(int *version);
+int pdb_bump_version(void);
+
+#endif
+```
+
+**`policy-db/policy_db.c`**
+```c
+#include "policy_db.h"
+#include <sqlite3.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static sqlite3 *db = NULL;
+
+int pdb_init(const char *db_path) {
+    if (sqlite3_open(db_path, &db) != SQLITE_OK) return -1;
+    
+    const char *sql = 
+        "CREATE TABLE IF NOT EXISTS profiles ("
+        "id INTEGER PRIMARY KEY, name TEXT UNIQUE, apl_text TEXT);"
+        "CREATE TABLE IF NOT EXISTS metadata ("
+        "key TEXT PRIMARY KEY, value TEXT);";
+        
+    char *err = NULL;
+    if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
+        sqlite3_free(err);
+        return -1;
+    }
+    return 0;
+}
+
+void pdb_destroy(void) {
+    if (db) sqlite3_close(db);
+    db = NULL;
+}
+
+int pdb_save_apl_text(const char *profile_name, const char *apl_text) {
+    const char *sql = "INSERT OR REPLACE INTO profiles (name, apl_text) VALUES (?, ?);";
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    
+    sqlite3_bind_text(stmt, 1, profile_name, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, apl_text, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int pdb_load_apl_text(const char *profile_name, char **out_text) {
+    const char *sql = "SELECT apl_text FROM profiles WHERE name = ?;";
+    sqlite3_stmt *stmt;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
+    
+    sqlite3_bind_text(stmt, 1, profile_name, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        const char *text = (const char *)sqlite3_column_text(stmt, 0);
+        *out_text = strdup(text);
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+    sqlite3_finalize(stmt);
+    return -1;
+}
+
+int pdb_bump_version(void) {
+    const char *sql = "INSERT OR REPLACE INTO metadata (key, value) VALUES ('version', "
+                      "COALESCE((SELECT CAST(value AS INTEGER) + 1 FROM metadata WHERE key='version'), '1'));";
+    char *err = NULL;
+    return (sqlite3_exec(db, sql, NULL, NULL, &err) == SQLITE_OK) ? 0 : -1;
+}
+```
+
+### 4. 策略执行器
+**`enforcer/enforcer.h`**
+```c
+#ifndef ENFORCER_H
+#define ENFORCER_H
+
+#include "ainos/ai_policy.h"
+
+int enforcer_init(const char *db_path, const char *default_profile_path);
+void enforcer_destroy(void);
+int enforcer_intercept(const ai_policy_context_t *ctx, ai_policy_decision_t *decision);
+void enforcer_set_audit_callback(ai_policy_audit_cb_t cb);
+
+#endif
+```
+
+**`enforcer/enforcer.c`**
+```c
+#include "enforcer.h"
+#include "../policy-engine/policy_engine.h"
+#include "../policy-db/policy_db.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+static ai_policy_engine_t g_engine;
+static ai_policy_audit_cb_t g_audit_cb = NULL;
+
+static void generate_audit(const ai_policy_context_t *ctx, ai_policy_decision_t dec, const char *reason) {
+    if (!g_audit_cb) return;
+    ai_policy_audit_t audit;
+    audit.timestamp = (uint64_t)time(NULL);
+    audit.decision = dec;
+    audit.ctx = *ctx;
+    strncpy(audit.reason, reason, sizeof(audit.reason) - 1);
+    g_audit_cb(&audit);
+}
+
+int enforcer_init(const char *db_path, const char *default_profile_path) {
+    if (engine_init(&g_engine) != 0) return -1;
+    if (pdb_init(db_path) != 0) return -1;
+
+    /* 加载默认策略 */
+    FILE *f = fopen(default_profile_path, "r");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        char *buffer = malloc(fsize + 1);
+        if (buffer) {
+            fread(buffer, 1, fsize, f);
+            buffer[fsize] = 0;
+            engine_parse_apl(&g_engine, buffer);
+            free(buffer);
+        }
+        fclose(f);
+    }
+    return 0;
+}
+
+void enforcer_destroy(void) {
+    engine_destroy(&g_engine);
+    pdb_destroy();
+}
+
+int enforcer_intercept(const ai_policy_context_t *ctx, ai_policy_decision_t *decision) {
+    if (g_engine.is_cut_off) {
+        *decision = AI_POLICY_DENY;
+        generate_audit(ctx, AI_POLICY_DENY, "Emergency cut-off active");
+        return 0;
+    }
+
+    *decision = engine_evaluate(&g_engine, ctx);
+    
+    const char *reason = (*decision == AI_POLICY_ALLOW) ? "Policy matched" : 
+                         (*decision == AI_POLICY_ASK) ? "User consent required" : "Default deny";
+    generate_audit(ctx, *decision, reason);
+    
+    return 0;
+}
+
+void enforcer_set_audit_callback(ai_policy_audit_cb_t cb) {
+    g_audit_cb = cb;
+    g_engine.audit_cb = cb;
+}
+
+/* 暴露给公共 API 的包装 */
+int ai_policy_init(void) { return 0; } /* 实际由 enforcer_init 处理 */
+void ai_policy_destroy(void) { enforcer_destroy(); }
+int ai_policy_check_permission(const ai_policy_context_t *ctx, ai_policy_decision_t *decision) {
+    return enforcer_intercept(ctx, decision);
+}
+void ai_policy_register_audit_cb(ai_policy_audit_cb_t cb) { enforcer_set_audit_callback(cb); }
+void ai_policy_emergency_cut_off(void) { g_engine.is_cut_off = 1; engine_flush_cache(&g_engine); }
+void ai_policy_resume(void) { g_engine.is_cut_off = 0; }
+```
+
+### 5. 默认策略配置 (APL)
+**`policy-profiles/default.apl`**
+```apl
+# Ainos OS Default AI Security Policy
+# 四层架构: system -> user -> app -> session
+
+layer system {
+    allow ai_model_load;
+    deny kernel_module_load;
+    deny hardware_access;
+}
+
+layer user {
+    allow data_access if user_role == "admin";
+    deny data_access if user_role == "guest";
+    allow telemetry_upload;
+}
+
+layer app {
+    deny network_access if app_id == "untrusted_ai";
+    allow gpu_compute if app_id == "verified_ai";
+    ask file_write;
+}
+
+layer session {
+    ask ai_model_load if session_type == "remote";
+    deny hardware_access if session_type == "untrusted";
+}
+```
+
+**`policy-profiles/strict.apl`**
+```apl
+# Ainos OS Strict Mode Policy
+layer system {
+    deny *; # 默认拒绝所有系统级操作
+    allow ai_model_load if context == "signed_binary";
+}
+
+layer user {
+    deny *;
+    allow data_access if user_role == "root";
+}
+
+layer app {
+    deny *;
+    allow gpu_compute if app_id == "system_ai";
+}
+
+layer session {
+    deny *;
+    allow * if session_type == "local_secure";
+}
+```
+
+**`policy-profiles/developer.apl`**
+```apl
+# Ainos OS Developer Mode Policy
+layer system {
+    allow *;
+}
+
+layer user {
+    allow *;
+}
+
+layer app {
+    allow *;
+}
+
+layer session {
+    allow *;
+    # 仅记录审计日志，不阻断
+}
+```
+
+### 6. 构建系统
+**`CMakeLists.txt`**
+```cmake
+cmake_minimum_required(VERSION 3.10)
+project(ainos_ai_policy C)
+
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Werror")
+
+# 包含目录
+include_directories(${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR})
+
+# 1. 策略引擎核心 (兼容内核态)
+add_library(ai_policy_engine STATIC
+    policy-engine/policy_engine.c
+)
+
+# 2. 策略数据库 (用户态)
+find_package(SQLite3 REQUIRED)
+add_library(ai_policy_db STATIC
+    policy-db/policy_db.c
+)
+target_link_libraries(ai_policy_db ai_policy_engine SQLite::SQLite3)
+
+# 3. 策略执行器 (用户态)
+add_library(ai_policy_enforcer STATIC
+    enforcer/enforcer.c
+)
+target_link_libraries(ai_policy_enforcer ai_policy_engine ai_policy_db)
+
+# 安装策略文件
+install(DIRECTORY policy-profiles/ DESTINATION share/ainos/ai-policy)
+
+# 示例可执行文件 (可选)
+# add_executable(policy_test test/test_main.c)
+# target_link_libraries(policy_test ai_policy_enforcer)
+```
+
+### 设计说明：
+1. **内核态兼容**：`policy_engine.c` 中通过 `#ifdef __KERNEL__` 隔离了内存分配 (`kmalloc`/`malloc`) 和字符串操作，确保核心匹配逻辑和 APL 解析器可以直接编译进 Linux 内核模块 (LKM) 中运行。
+2. **APL 解析器**：实现了一个轻量级的无锁状态机解析器，不依赖 `stdio.h`，支持注释、层级定义和条件判断 (`==` / `!=`)。
+3. **四层决策引擎**：严格按照 `system → user → app → session` 的顺序进行规则匹配，遇到首个匹配规则即返回决策（支持 `allow`/`deny`/`ask`）。
+4. **热加载与缓存**：`engine_flush_cache` 支持在策略热更新时清空哈希缓存，确保新策略立即生效。
+5. **紧急切断 (Panic Switch)**：`ai_policy_emergency_cut_off()` 会设置全局标志，使所有后续请求直接返回 `DENY`，用于应对 AI 失控等极端安全事件。

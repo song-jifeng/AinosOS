@@ -1,0 +1,896 @@
+# Ainos OS AI Runtime 系统服务层完整实现
+
+## 1. 公共头文件
+
+```cpp
+// include/ainos/ai_runtime.h
+#ifndef AINOS_AI_RUNTIME_H
+#define AINOS_AI_RUNTIME_H
+
+#include <string>
+#include <vector>
+#include <memory>
+#include <functional>
+#include <cstdint>
+
+namespace ainos {
+namespace ai {
+
+// 版本信息
+constexpr const char* AI_RUNTIME_VERSION = "1.0.0";
+
+// 返回码
+enum class Status {
+    OK = 0,
+    ERROR_INVALID_PARAM = -1,
+    ERROR_MODEL_NOT_FOUND = -2,
+    ERROR_INFERENCE_FAILED = -3,
+    ERROR_OUT_OF_MEMORY = -4,
+    ERROR_DEVICE_NOT_AVAILABLE = -5,
+    ERROR_CONTEXT_OVERFLOW = -6,
+    ERROR_SERIALIZATION_FAILED = -7
+};
+
+// 设备类型
+enum class DeviceType {
+    CPU = 0,
+    GPU = 1,
+    NPU = 2
+};
+
+// 数据类型
+enum class DataType {
+    FLOAT32 = 0,
+    FLOAT16 = 1,
+    INT8 = 2,
+    INT32 = 3,
+    INT64 = 4
+};
+
+// 张量结构
+struct Tensor {
+    std::string name;
+    std::vector<int64_t> shape;
+    DataType dtype;
+    void* data;
+    size_t size;
+    
+    Tensor() : data(nullptr), size(0), dtype(DataType::FLOAT32) {}
+    ~Tensor() { if (data) free(data); }
+};
+
+// 模型元数据
+struct ModelMetadata {
+    std::string model_id;
+    std::string model_path;
+    std::string framework;  // "ggml" or "onnx"
+    int64_t loaded_time;
+    size_t memory_usage;
+    DeviceType device;
+};
+
+// 推理配置
+struct InferenceConfig {
+    int max_tokens = 512;
+    float temperature = 0.7f;
+    float top_p = 0.9f;
+    int top_k = 40;
+    int num_threads = 4;
+    DeviceType device = DeviceType::CPU;
+    bool use_cache = true;
+};
+
+// 上下文信息
+struct ContextInfo {
+    std::string context_id;
+    std::string model_id;
+    size_t token_count;
+    size_t max_tokens;
+    int64_t created_time;
+    int64_t last_access_time;
+};
+
+// 回调函数类型
+using TokenCallback = std::function<void(const std::string& token)>;
+using ProgressCallback = std::function<void(float progress)>;
+
+// GGML引擎接口
+class IGGMLEngine {
+public:
+    virtual ~IGGMLEngine() = default;
+    
+    virtual Status LoadModel(const std::string& model_path, const std::string& model_id) = 0;
+    virtual Status UnloadModel(const std::string& model_id) = 0;
+    virtual Status Inference(const std::string& model_id, 
+                           const std::string& prompt,
+                           std::string& output,
+                           const InferenceConfig& config = InferenceConfig()) = 0;
+    virtual Status InferenceStream(const std::string& model_id,
+                                  const std::string& prompt,
+                                  TokenCallback callback,
+                                  const InferenceConfig& config = InferenceConfig()) = 0;
+    virtual Status GetModelInfo(const std::string& model_id, ModelMetadata& metadata) = 0;
+};
+
+// ONNX服务接口
+class IONNXService {
+public:
+    virtual ~IONNXService() = default;
+    
+    virtual Status LoadModel(const std::string& model_path, const std::string& model_id) = 0;
+    virtual Status UnloadModel(const std::string& model_id) = 0;
+    virtual Status Inference(const std::string& model_id,
+                           const std::vector<Tensor>& inputs,
+                           std::vector<Tensor>& outputs) = 0;
+    virtual Status GetModelInfo(const std::string& model_id, ModelMetadata& metadata) = 0;
+};
+
+// 模型管理器接口
+class IModelManager {
+public:
+    virtual ~IModelManager() = default;
+    
+    virtual Status RegisterModel(const std::string& model_id,
+                                const std::string& model_path,
+                                const std::string& framework) = 0;
+    virtual Status UnregisterModel(const std::string& model_id) = 0;
+    virtual Status LoadModel(const std::string& model_id) = 0;
+    virtual Status UnloadModel(const std::string& model_id) = 0;
+    virtual Status ListModels(std::vector<ModelMetadata>& models) = 0;
+    virtual Status GetModelMetadata(const std::string& model_id, ModelMetadata& metadata) = 0;
+    virtual Status OptimizeMemory() = 0;
+};
+
+// 上下文管理器接口
+class IContextManager {
+public:
+    virtual ~IContextManager() = default;
+    
+    virtual Status CreateContext(const std::string& model_id,
+                                const std::string& context_id,
+                                size_t max_tokens = 4096) = 0;
+    virtual Status DestroyContext(const std::string& context_id) = 0;
+    virtual Status SaveContext(const std::string& context_id, const std::string& path) = 0;
+    virtual Status LoadContext(const std::string& context_id, const std::string& path) = 0;
+    virtual Status UpdateContext(const std::string& context_id,
+                                const std::vector<int32_t>& tokens) = 0;
+    virtual Status GetContextInfo(const std::string& context_id, ContextInfo& info) = 0;
+    virtual Status ListContexts(std::vector<ContextInfo>& contexts) = 0;
+    virtual Status ClearExpiredContexts(int64_t max_age_seconds) = 0;
+};
+
+// 工厂函数
+std::shared_ptr<IGGMLEngine> CreateGGMLEngine();
+std::shared_ptr<IONNXService> CreateONNXService();
+std::shared_ptr<IModelManager> CreateModelManager();
+std::shared_ptr<IContextManager> CreateContextManager();
+
+} // namespace ai
+} // namespace ainos
+
+#endif // AINOS_AI_RUNTIME_H
+```
+
+## 2. GGML推理引擎实现
+
+```cpp
+// ggml-engine/ggml_engine.cpp
+#include "ainos/ai_runtime.h"
+#include <map>
+#include <mutex>
+#include <thread>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <chrono>
+#include <algorithm>
+
+namespace ainos {
+namespace ai {
+
+// 简化的GGML模型结构
+struct GGMLModel {
+    std::string model_id;
+    std::string model_path;
+    std::vector<float> weights;
+    std::vector<int64_t> vocab_size;
+    size_t n_layers;
+    size_t n_heads;
+    size_t n_embd;
+    size_t n_vocab;
+    int64_t loaded_time;
+    size_t memory_usage;
+    
+    // 简化的KV缓存
+    std::vector<std::vector<float>> kv_cache;
+};
+
+class GGMLEngine : public IGGMLEngine {
+private:
+    std::map<std::string, std::shared_ptr<GGMLModel>> models_;
+    std::mutex mutex_;
+    int num_threads_;
+
+    // 简化的tokenizer
+    std::vector<std::string> SimpleTokenize(const std::string& text) {
+        std::vector<std::string> tokens;
+        std::istringstream iss(text);
+        std::string word;
+        while (iss >> word) {
+            tokens.push_back(word);
+        }
+        return tokens;
+    }
+
+    // 简化的推理实现
+    std::string SimpleInference(GGMLModel* model, 
+                               const std::vector<std::string>& tokens,
+                               const InferenceConfig& config) {
+        std::ostringstream result;
+        
+        // 模拟推理过程
+        for (size_t i = 0; i < std::min(tokens.size(), (size_t)config.max_tokens); ++i) {
+            // 简单的文本生成逻辑
+            if (i > 0) result << " ";
+            result << tokens[i % tokens.size()];
+            
+            // 模拟处理时间
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        
+        return result.str();
+    }
+
+    Status ValidateModelPath(const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file.good()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+        return Status::OK;
+    }
+
+public:
+    GGMLEngine() : num_threads_(std::thread::hardware_concurrency()) {}
+
+    Status LoadModel(const std::string& model_path, const std::string& model_id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        if (models_.find(model_id) != models_.end()) {
+            return Status::OK; // Already loaded
+        }
+
+        auto status = ValidateModelPath(model_path);
+        if (status != Status::OK) {
+            return status;
+        }
+
+        auto model = std::make_shared<GGMLModel>();
+        model->model_id = model_id;
+        model->model_path = model_path;
+        model->n_layers = 32;
+        model->n_heads = 32;
+        model->n_embd = 4096;
+        model->n_vocab = 32000;
+        model->loaded_time = std::chrono::system_clock::now().time_since_epoch().count();
+        
+        // 分配模拟权重内存
+        size_t total_params = model->n_layers * model->n_embd * model->n_embd * 4;
+        model->memory_usage = total_params * sizeof(float);
+        model->weights.resize(1024); // 简化的权重存储
+        
+        // 初始化KV缓存
+        model->kv_cache.resize(model->n_layers);
+        for (auto& cache : model->kv_cache) {
+            cache.resize(model->n_embd * 2048);
+        }
+
+        models_[model_id] = model;
+        return Status::OK;
+    }
+
+    Status UnloadModel(const std::string& model_id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        auto it = models_.find(model_id);
+        if (it == models_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        models_.erase(it);
+        return Status::OK;
+    }
+
+    Status Inference(const std::string& model_id,
+                    const std::string& prompt,
+                    std::string& output,
+                    const InferenceConfig& config) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        auto it = models_.find(model_id);
+        if (it == models_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        auto model = it->second.get();
+        auto tokens = SimpleTokenize(prompt);
+        
+        if (tokens.empty()) {
+            return Status::ERROR_INVALID_PARAM;
+        }
+
+        output = SimpleInference(model, tokens, config);
+        return Status::OK;
+    }
+
+    Status InferenceStream(const std::string& model_id,
+                          const std::string& prompt,
+                          TokenCallback callback,
+                          const InferenceConfig& config) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        auto it = models_.find(model_id);
+        if (it == models_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        auto model = it->second.get();
+        auto tokens = SimpleTokenize(prompt);
+        
+        if (tokens.empty()) {
+            return Status::ERROR_INVALID_PARAM;
+        }
+
+        // 流式输出
+        for (size_t i = 0; i < std::min(tokens.size(), (size_t)config.max_tokens); ++i) {
+            std::string token = tokens[i % tokens.size()];
+            if (callback) {
+                callback(token);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        return Status::OK;
+    }
+
+    Status GetModelInfo(const std::string& model_id, ModelMetadata& metadata) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        auto it = models_.find(model_id);
+        if (it == models_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        auto model = it->second;
+        metadata.model_id = model->model_id;
+        metadata.model_path = model->model_path;
+        metadata.framework = "ggml";
+        metadata.loaded_time = model->loaded_time;
+        metadata.memory_usage = model->memory_usage;
+        metadata.device = DeviceType::CPU;
+
+        return Status::OK;
+    }
+};
+
+std::shared_ptr<IGGMLEngine> CreateGGMLEngine() {
+    return std::make_shared<GGMLEngine>();
+}
+
+} // namespace ai
+} // namespace ainos
+```
+
+## 3. ONNX Runtime推理服务
+
+```cpp
+// onnx-service/onnx_service.cpp
+#include "ainos/ai_runtime.h"
+#include <map>
+#include <mutex>
+#include <fstream>
+#include <cstring>
+#include <chrono>
+
+namespace ainos {
+namespace ai {
+
+// 简化的ONNX会话结构
+struct ONNXSession {
+    std::string model_id;
+    std::string model_path;
+    std::vector<std::string> input_names;
+    std::vector<std::string> output_names;
+    std::vector<std::vector<int64_t>> input_shapes;
+    std::vector<std::vector<int64_t>> output_shapes;
+    int64_t loaded_time;
+    size_t memory_usage;
+    DeviceType device;
+};
+
+class ONNXService : public IONNXService {
+private:
+    std::map<std::string, std::shared_ptr<ONNXSession>> sessions_;
+    std::mutex mutex_;
+
+    Status ValidateModelPath(const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file.good()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+        
+        // 简单的ONNX文件验证（检查magic number）
+        char magic[4];
+        file.read(magic, 4);
+        // ONNX文件通常以特定字节开头，这里简化处理
+        
+        return Status::OK;
+    }
+
+    size_t CalculateTensorSize(const std::vector<int64_t>& shape, DataType dtype) {
+        size_t size = 1;
+        for (auto dim : shape) {
+            size *= dim;
+        }
+        
+        size_t elem_size = 4; // 默认float32
+        switch (dtype) {
+            case DataType::FLOAT16: elem_size = 2; break;
+            case DataType::INT8: elem_size = 1; break;
+            case DataType::INT32: elem_size = 4; break;
+            case DataType::INT64: elem_size = 8; break;
+            default: break;
+        }
+        
+        return size * elem_size;
+    }
+
+public:
+    ONNXService() = default;
+
+    Status LoadModel(const std::string& model_path, const std::string& model_id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        if (sessions_.find(model_id) != sessions_.end()) {
+            return Status::OK;
+        }
+
+        auto status = ValidateModelPath(model_path);
+        if (status != Status::OK) {
+            return status;
+        }
+
+        auto session = std::make_shared<ONNXSession>();
+        session->model_id = model_id;
+        session->model_path = model_path;
+        session->loaded_time = std::chrono::system_clock::now().time_since_epoch().count();
+        session->device = DeviceType::CPU;
+        
+        // 模拟读取模型输入输出信息
+        session->input_names = {"input"};
+        session->output_names = {"output"};
+        session->input_shapes = {{1, 3, 224, 224}};
+        session->output_shapes = {{1, 1000}};
+        
+        // 估算内存使用
+        session->memory_usage = 50 * 1024 * 1024; // 50MB
+
+        sessions_[model_id] = session;
+        return Status::OK;
+    }
+
+    Status UnloadModel(const std::string& model_id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        auto it = sessions_.find(model_id);
+        if (it == sessions_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        sessions_.erase(it);
+        return Status::OK;
+    }
+
+    Status Inference(const std::string& model_id,
+                    const std::vector<Tensor>& inputs,
+                    std::vector<Tensor>& outputs) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        auto it = sessions_.find(model_id);
+        if (it == sessions_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        auto session = it->second;
+
+        // 验证输入
+        if (inputs.size() != session->input_names.size()) {
+            return Status::ERROR_INVALID_PARAM;
+        }
+
+        // 准备输出张量
+        outputs.clear();
+        for (size_t i = 0; i < session->output_names.size(); ++i) {
+            Tensor output_tensor;
+            output_tensor.name = session->output_names[i];
+            output_tensor.shape = session->output_shapes[i];
+            output_tensor.dtype = DataType::FLOAT32;
+            output_tensor.size = CalculateTensorSize(output_tensor.shape, output_tensor.dtype);
+            output_tensor.data = malloc(output_tensor.size);
+            
+            if (!output_tensor.data) {
+                return Status::ERROR_OUT_OF_MEMORY;
+            }
+
+            // 简化的推理：填充模拟数据
+            float* output_data = static_cast<float*>(output_tensor.data);
+            size_t num_elements = output_tensor.size / sizeof(float);
+            for (size_t j = 0; j < num_elements; ++j) {
+                output_data[j] = static_cast<float>(j) * 0.001f;
+            }
+
+            outputs.push_back(std::move(output_tensor));
+        }
+
+        return Status::OK;
+    }
+
+    Status GetModelInfo(const std::string& model_id, ModelMetadata& metadata) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        auto it = sessions_.find(model_id);
+        if (it == sessions_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        auto session = it->second;
+        metadata.model_id = session->model_id;
+        metadata.model_path = session->model_path;
+        metadata.framework = "onnx";
+        metadata.loaded_time = session->loaded_time;
+        metadata.memory_usage = session->memory_usage;
+        metadata.device = session->device;
+
+        return Status::OK;
+    }
+};
+
+std::shared_ptr<IONNXService> CreateONNXService() {
+    return std::make_shared<ONNXService>();
+}
+
+} // namespace ai
+} // namespace ainos
+```
+
+## 4. 模型管理守护进程
+
+```cpp
+// model-manager/model_manager.cpp
+#include "ainos/ai_runtime.h"
+#include <map>
+#include <mutex>
+#include <fstream>
+#include <algorithm>
+#include <chrono>
+
+namespace ainos {
+namespace ai {
+
+struct ModelEntry {
+    std::string model_id;
+    std::string model_path;
+    std::string framework;
+    bool is_loaded;
+    int64_t registered_time;
+    int64_t last_access_time;
+    size_t access_count;
+    ModelMetadata metadata;
+};
+
+class ModelManager : public IModelManager {
+private:
+    std::map<std::string, ModelEntry> models_;
+    std::shared_ptr<IGGMLEngine> ggml_engine_;
+    std::shared_ptr<IONNXService> onnx_service_;
+    std::mutex mutex_;
+    size_t max_loaded_models_;
+    size_t total_memory_limit_;
+    size_t current_memory_usage_;
+
+    Status EvictLRUModel() {
+        if (models_.empty()) {
+            return Status::OK;
+        }
+
+        // 找到最少访问且已加载的模型
+        std::string lru_model_id;
+        int64_t oldest_time = std::numeric_limits<int64_t>::max();
+        
+        for (const auto& entry : models_) {
+            if (entry.second.is_loaded && entry.second.last_access_time < oldest_time) {
+                oldest_time = entry.second.last_access_time;
+                lru_model_id = entry.first;
+            }
+        }
+
+        if (!lru_model_id.empty()) {
+            return UnloadModel(lru_model_id);
+        }
+
+        return Status::OK;
+    }
+
+public:
+    ModelManager() 
+        : max_loaded_models_(10)
+        , total_memory_limit_(8ULL * 1024 * 1024 * 1024) // 8GB
+        , current_memory_usage_(0) {
+        
+        ggml_engine_ = CreateGGMLEngine();
+        onnx_service_ = CreateONNXService();
+    }
+
+    Status RegisterModel(const std::string& model_id,
+                        const std::string& model_path,
+                        const std::string& framework) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        if (models_.find(model_id) != models_.end()) {
+            return Status::OK; // Already registered
+        }
+
+        // 验证框架类型
+        if (framework != "ggml" && framework != "onnx") {
+            return Status::ERROR_INVALID_PARAM;
+        }
+
+        // 验证模型文件存在
+        std::ifstream file(model_path);
+        if (!file.good()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        ModelEntry entry;
+        entry.model_id = model_id;
+        entry.model_path = model_path;
+        entry.framework = framework;
+        entry.is_loaded = false;
+        entry.registered_time = std::chrono::system_clock::now().time_since_epoch().count();
+        entry.last_access_time = entry.registered_time;
+        entry.access_count = 0;
+
+        models_[model_id] = entry;
+        return Status::OK;
+    }
+
+    Status UnregisterModel(const std::string& model_id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        auto it = models_.find(model_id);
+        if (it == models_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        if (it->second.is_loaded) {
+            auto status = UnloadModel(model_id);
+            if (status != Status::OK) {
+                return status;
+            }
+        }
+
+        models_.erase(it);
+        return Status::OK;
+    }
+
+    Status LoadModel(const std::string& model_id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        auto it = models_.find(model_id);
+        if (it == models_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        if (it->second.is_loaded) {
+            it->second.last_access_time = std::chrono::system_clock::now().time_since_epoch().count();
+            return Status::OK;
+        }
+
+        // 检查内存限制，必要时驱逐模型
+        while (current_memory_usage_ > total_memory_limit_ * 0.8) {
+            auto status = EvictLRUModel();
+            if (status != Status::OK) {
+                break;
+            }
+        }
+
+        Status status;
+        if (it->second.framework == "ggml") {
+            status = ggml_engine_->LoadModel(it->second.model_path, model_id);
+            if (status == Status::OK) {
+                ggml_engine_->GetModelInfo(model_id, it->second.metadata);
+            }
+        } else if (it->second.framework == "onnx") {
+            status = onnx_service_->LoadModel(it->second.model_path, model_id);
+            if (status == Status::OK) {
+                onnx_service_->GetModelInfo(model_id, it->second.metadata);
+            }
+        } else {
+            return Status::ERROR_INVALID_PARAM;
+        }
+
+        if (status == Status::OK) {
+            it->second.is_loaded = true;
+            it->second.last_access_time = std::chrono::system_clock::now().time_since_epoch().count();
+            it->second.access_count++;
+            current_memory_usage_ += it->second.metadata.memory_usage;
+        }
+
+        return status;
+    }
+
+    Status UnloadModel(const std::string& model_id) override {
+        auto it = models_.find(model_id);
+        if (it == models_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        if (!it->second.is_loaded) {
+            return Status::OK;
+        }
+
+        Status status;
+        if (it->second.framework == "ggml") {
+            status = ggml_engine_->UnloadModel(model_id);
+        } else if (it->second.framework == "onnx") {
+            status = onnx_service_->UnloadModel(model_id);
+        }
+
+        if (status == Status::OK) {
+            current_memory_usage_ -= it->second.metadata.memory_usage;
+            it->second.is_loaded = false;
+        }
+
+        return status;
+    }
+
+    Status ListModels(std::vector<ModelMetadata>& models) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        models.clear();
+        for (const auto& entry : models_) {
+            if (entry.second.is_loaded) {
+                models.push_back(entry.second.metadata);
+            } else {
+                ModelMetadata meta;
+                meta.model_id = entry.second.model_id;
+                meta.model_path = entry.second.model_path;
+                meta.framework = entry.second.framework;
+                meta.loaded_time = 0;
+                meta.memory_usage = 0;
+                meta.device = DeviceType::CPU;
+                models.push_back(meta);
+            }
+        }
+
+        return Status::OK;
+    }
+
+    Status GetModelMetadata(const std::string& model_id, ModelMetadata& metadata) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        auto it = models_.find(model_id);
+        if (it == models_.end()) {
+            return Status::ERROR_MODEL_NOT_FOUND;
+        }
+
+        if (it->second.is_loaded) {
+            metadata = it->second.metadata;
+        } else {
+            metadata.model_id = it->second.model_id;
+            metadata.model_path = it->second.model_path;
+            metadata.framework = it->second.framework;
+            metadata.loaded_time = 0;
+            metadata.memory_usage = 0;
+            metadata.device = DeviceType::CPU;
+        }
+
+        return Status::OK;
+    }
+
+    Status OptimizeMemory() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        // 卸载长时间未访问的模型
+        int64_t current_time = std::chrono::system_clock::now().time_since_epoch().count();
+        int64_t idle_threshold = 3600LL * 1000 * 1000 * 1000; // 1小时
+
+        std::vector<std::string> to_unload;
+        for (const auto& entry : models_) {
+            if (entry.second.is_loaded && 
+                (current_time - entry.second.last_access_time) > idle_threshold) {
+                to_unload.push_back(entry.first);
+            }
+        }
+
+        for (const auto& model_id : to_unload) {
+            UnloadModel(model_id);
+        }
+
+        return Status::OK;
+    }
+};
+
+std::shared_ptr<IModelManager> CreateModelManager() {
+    return std::make_shared<ModelManager>();
+}
+
+} // namespace ai
+} // namespace ainos
+```
+
+## 5. 上下文管理子系统
+
+```cpp
+// context-manager/context_manager.cpp
+#include "ainos/ai_runtime.h"
+#include <map>
+#include <mutex>
+#include <fstream>
+#include <chrono>
+#include <cstring>
+
+namespace ainos {
+namespace ai {
+
+struct Context {
+    std::string context_id;
+    std::string model_id;
+    std::vector<int32_t> tokens;
+    size_t max_tokens;
+    int64_t created_time;
+    int64_t last_access_time;
+    
+    // KV缓存（简化版）
+    std::vector<float> key_cache;
+    std::vector<float> value_cache;
+};
+
+class ContextManager : public IContextManager {
+private:
+    std::map<std::string, Context> contexts_;
+    std::mutex mutex_;
+    size_t max_contexts_;
+    std::string cache_directory_;
+
+    Status EvictOldestContext() {
+        if (contexts_.empty()) {
+            return Status::OK;
+        }
+
+        std::string oldest_id;
+        int64_t oldest_time = std::numeric_limits<int64_t>::max();
+        
+        for (const auto& entry : contexts_) {
+            if (entry.second.last_access_time < oldest_time) {
+                oldest_time = entry.second.last_access_time;
+                oldest_id = entry.first;
+            }
+        }
+
+        if (!oldest_id.empty()) {
+            return DestroyContext(oldest_id);
+        }
+
+        return Status::OK;
+    }
+
+    std::string GetCachePath(const std::string& context_id) {
+        return cache_directory_ + "/" + context_id + ".ctx";
+    }
+
+public:
+    ContextManager() 
+        : max_contexts_(100)
+        , cache_directory_("./context_cache") {
+        
+        // 确保缓存目录存在（简化版，实际需

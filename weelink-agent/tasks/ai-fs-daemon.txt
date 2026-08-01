@@ -1,0 +1,930 @@
+我将为 Ainos OS 的 AI 文件系统创建用户空间守护进程和索引引擎。让我先创建项目目录结构，然后实现各个组件。
+
+```cpp
+// include/ainos/ai_fs.h
+#ifndef AINOS_AI_FS_H
+#define AINOS_AI_FS_H
+
+#include <string>
+#include <vector>
+#include <cstdint>
+#include <memory>
+
+namespace ainos {
+namespace ai_fs {
+
+// 版本信息
+constexpr const char* VERSION = "1.0.0";
+
+// 文件元数据
+struct FileMetadata {
+    std::string path;
+    std::string mime_type;
+    uint64_t size;
+    uint64_t mtime;
+    std::string content_hash;
+};
+
+// 搜索结果
+struct SearchResult {
+    std::string path;
+    float similarity_score;
+    std::string snippet;
+    FileMetadata metadata;
+};
+
+// 索引状态
+enum class IndexStatus {
+    IDLE,
+    INDEXING,
+    PAUSED,
+    ERROR
+};
+
+struct IndexStats {
+    IndexStatus status;
+    uint64_t total_files;
+    uint64_t indexed_files;
+    uint64_t pending_files;
+    uint64_t failed_files;
+};
+
+// 搜索选项
+struct SearchOptions {
+    uint32_t max_results = 10;
+    float min_similarity = 0.5f;
+    bool include_content = false;
+    std::vector<std::string> file_types;
+};
+
+// 公共 API
+class AIFileSystem {
+public:
+    virtual ~AIFileSystem() = default;
+    
+    // 初始化文件系统
+    virtual bool initialize(const std::string& root_path, const std::string& index_path) = 0;
+    
+    // 语义搜索
+    virtual std::vector<SearchResult> search(const std::string& query, const SearchOptions& options) = 0;
+    
+    // 索引控制
+    virtual bool start_indexing() = 0;
+    virtual bool pause_indexing() = 0;
+    virtual bool resume_indexing() = 0;
+    virtual IndexStats get_index_stats() const = 0;
+    
+    // 手动添加/删除文件
+    virtual bool index_file(const std::string& path) = 0;
+    virtual bool remove_file(const std::string& path) = 0;
+    
+    // 关闭
+    virtual void shutdown() = 0;
+};
+
+// 创建文件系统实例
+std::unique_ptr<AIFileSystem> create_ai_filesystem();
+
+} // namespace ai_fs
+} // namespace ainos
+
+#endif // AINOS_AI_FS_H
+```
+
+```cpp
+// indexer/indexer.h
+#ifndef AINOS_AI_FS_INDEXER_H
+#define AINOS_AI_FS_INDEXER_H
+
+#include <string>
+#include <vector>
+#include <memory>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <thread>
+#include <unordered_map>
+#include <functional>
+
+namespace ainos {
+namespace ai_fs {
+
+// 文档内容
+struct Document {
+    std::string path;
+    std::string content;
+    std::string mime_type;
+    uint64_t mtime;
+    std::vector<float> embedding;
+};
+
+// 文件内容提取器基类
+class ContentExtractor {
+public:
+    virtual ~ContentExtractor() = default;
+    virtual bool can_extract(const std::string& mime_type) const = 0;
+    virtual std::string extract(const std::string& file_path) = 0;
+};
+
+// 文本文件提取器
+class TextExtractor : public ContentExtractor {
+public:
+    bool can_extract(const std::string& mime_type) const override;
+    std::string extract(const std::string& file_path) override;
+};
+
+// PDF 提取器
+class PDFExtractor : public ContentExtractor {
+public:
+    bool can_extract(const std::string& mime_type) const override;
+    std::string extract(const std::string& file_path) override;
+};
+
+// 代码文件提取器
+class CodeExtractor : public ContentExtractor {
+public:
+    bool can_extract(const std::string& mime_type) const override;
+    std::string extract(const std::string& file_path) override;
+};
+
+// 索引任务
+struct IndexTask {
+    enum class Type {
+        ADD,
+        UPDATE,
+        REMOVE
+    };
+    
+    Type type;
+    std::string path;
+    uint64_t mtime;
+};
+
+// 嵌入生成器接口 (与 AI Runtime 通信)
+class EmbeddingGenerator {
+public:
+    virtual ~EmbeddingGenerator() = default;
+    virtual std::vector<float> generate(const std::string& text) = 0;
+    virtual size_t embedding_dim() const = 0;
+};
+
+// IPC 嵌入生成器
+class IPCEmbeddingGenerator : public EmbeddingGenerator {
+public:
+    explicit IPCEmbeddingGenerator(const std::string& socket_path);
+    ~IPCEmbeddingGenerator() override;
+    
+    std::vector<float> generate(const std::string& text) override;
+    size_t embedding_dim() const override;
+    
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+// 索引回调
+using IndexCallback = std::function<void(const Document&)>;
+using ErrorCallback = std::function<void(const std::string&, const std::string&)>;
+
+// 文件索引引擎
+class Indexer {
+public:
+    Indexer(const std::string& root_path, 
+            std::shared_ptr<EmbeddingGenerator> embedding_gen);
+    ~Indexer();
+    
+    // 启动/停止
+    bool start();
+    void stop();
+    void pause();
+    void resume();
+    
+    // 添加索引任务
+    void enqueue_task(const IndexTask& task);
+    
+    // 回调设置
+    void set_index_callback(IndexCallback callback);
+    void set_error_callback(ErrorCallback callback);
+    
+    // 状态查询
+    bool is_running() const { return running_; }
+    bool is_paused() const { return paused_; }
+    size_t pending_tasks() const;
+    
+    // 注册内容提取器
+    void register_extractor(std::unique_ptr<ContentExtractor> extractor);
+    
+private:
+    void worker_thread();
+    void process_task(const IndexTask& task);
+    std::string extract_content(const std::string& path, const std::string& mime_type);
+    std::string detect_mime_type(const std::string& path);
+    
+    std::string root_path_;
+    std::shared_ptr<EmbeddingGenerator> embedding_gen_;
+    
+    std::vector<std::unique_ptr<ContentExtractor>> extractors_;
+    
+    std::queue<IndexTask> task_queue_;
+    mutable std::mutex queue_mutex_;
+    std::condition_variable queue_cv_;
+    
+    std::atomic<bool> running_{false};
+    std::atomic<bool> paused_{false};
+    std::vector<std::thread> worker_threads_;
+    
+    IndexCallback index_callback_;
+    ErrorCallback error_callback_;
+    std::mutex callback_mutex_;
+    
+    // 文件哈希缓存 (避免重复索引)
+    std::unordered_map<std::string, std::string> file_hashes_;
+    std::mutex hash_mutex_;
+};
+
+} // namespace ai_fs
+} // namespace ainos
+
+#endif // AINOS_AI_FS_INDEXER_H
+```
+
+```cpp
+// indexer/indexer.cpp
+#include "indexer.h"
+#include <fstream>
+#include <sstream>
+#include <filesystem>
+#include <algorithm>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <cstring>
+#include <openssl/md5.h>
+
+namespace fs = std::filesystem;
+
+namespace ainos {
+namespace ai_fs {
+
+// TextExtractor 实现
+bool TextExtractor::can_extract(const std::string& mime_type) const {
+    return mime_type.find("text/") == 0 || 
+           mime_type == "application/json" ||
+           mime_type == "application/xml";
+}
+
+std::string TextExtractor::extract(const std::string& file_path) {
+    std::ifstream file(file_path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Failed to open file: " + file_path);
+    }
+    
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    return buffer.str();
+}
+
+// PDFExtractor 实现
+bool PDFExtractor::can_extract(const std::string& mime_type) const {
+    return mime_type == "application/pdf";
+}
+
+std::string PDFExtractor::extract(const std::string& file_path) {
+    // 简化实现：实际应使用 poppler 或其他 PDF 库
+    // 这里仅作示例
+    std::string content = "[PDF content extraction not implemented]\n";
+    content += "File: " + file_path;
+    return content;
+}
+
+// CodeExtractor 实现
+bool CodeExtractor::can_extract(const std::string& mime_type) const {
+    static const std::vector<std::string> code_types = {
+        "text/x-c", "text/x-c++", "text/x-python", "text/x-java",
+        "text/x-javascript", "text/x-rust", "text/x-go"
+    };
+    
+    return std::find(code_types.begin(), code_types.end(), mime_type) != code_types.end();
+}
+
+std::string CodeExtractor::extract(const std::string& file_path) {
+    std::ifstream file(file_path);
+    if (!file) {
+        throw std::runtime_error("Failed to open file: " + file_path);
+    }
+    
+    std::stringstream buffer;
+    std::string line;
+    int line_num = 1;
+    
+    // 添加行号以保持代码结构信息
+    while (std::getline(file, line)) {
+        buffer << line_num++ << ": " << line << "\n";
+    }
+    
+    return buffer.str();
+}
+
+// IPCEmbeddingGenerator 实现
+class IPCEmbeddingGenerator::Impl {
+public:
+    explicit Impl(const std::string& socket_path) 
+        : socket_path_(socket_path), sockfd_(-1), embedding_dim_(768) {
+        connect();
+    }
+    
+    ~Impl() {
+        if (sockfd_ >= 0) {
+            close(sockfd_);
+        }
+    }
+    
+    std::vector<float> generate(const std::string& text) {
+        std::lock_guard<std::mutex> lock(socket_mutex_);
+        
+        if (sockfd_ < 0 && !connect()) {
+            throw std::runtime_error("Not connected to AI Runtime");
+        }
+        
+        // 构造请求: [size:4][text:size]
+        uint32_t text_size = static_cast<uint32_t>(text.size());
+        
+        if (send(sockfd_, &text_size, sizeof(text_size), 0) != sizeof(text_size)) {
+            reconnect();
+            throw std::runtime_error("Failed to send text size");
+        }
+        
+        if (send(sockfd_, text.data(), text_size, 0) != static_cast<ssize_t>(text_size)) {
+            reconnect();
+            throw std::runtime_error("Failed to send text");
+        }
+        
+        // 接收响应: [dim:4][embedding:dim*4]
+        uint32_t dim;
+        if (recv(sockfd_, &dim, sizeof(dim), MSG_WAITALL) != sizeof(dim)) {
+            reconnect();
+            throw std::runtime_error("Failed to receive embedding dimension");
+        }
+        
+        std::vector<float> embedding(dim);
+        size_t bytes_to_recv = dim * sizeof(float);
+        
+        if (recv(sockfd_, embedding.data(), bytes_to_recv, MSG_WAITALL) != 
+            static_cast<ssize_t>(bytes_to_recv)) {
+            reconnect();
+            throw std::runtime_error("Failed to receive embedding");
+        }
+        
+        return embedding;
+    }
+    
+    size_t embedding_dim() const { return embedding_dim_; }
+    
+private:
+    bool connect() {
+        sockfd_ = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (sockfd_ < 0) {
+            return false;
+        }
+        
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+        
+        if (::connect(sockfd_, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            close(sockfd_);
+            sockfd_ = -1;
+            return false;
+        }
+        
+        return true;
+    }
+    
+    void reconnect() {
+        if (sockfd_ >= 0) {
+            close(sockfd_);
+            sockfd_ = -1;
+        }
+        connect();
+    }
+    
+    std::string socket_path_;
+    int sockfd_;
+    size_t embedding_dim_;
+    std::mutex socket_mutex_;
+};
+
+IPCEmbeddingGenerator::IPCEmbeddingGenerator(const std::string& socket_path)
+    : impl_(std::make_unique<Impl>(socket_path)) {}
+
+IPCEmbeddingGenerator::~IPCEmbeddingGenerator() = default;
+
+std::vector<float> IPCEmbeddingGenerator::generate(const std::string& text) {
+    return impl_->generate(text);
+}
+
+size_t IPCEmbeddingGenerator::embedding_dim() const {
+    return impl_->embedding_dim();
+}
+
+// Indexer 实现
+Indexer::Indexer(const std::string& root_path,
+                 std::shared_ptr<EmbeddingGenerator> embedding_gen)
+    : root_path_(root_path), embedding_gen_(std::move(embedding_gen)) {
+    
+    // 注册默认提取器
+    register_extractor(std::make_unique<TextExtractor>());
+    register_extractor(std::make_unique<PDFExtractor>());
+    register_extractor(std::make_unique<CodeExtractor>());
+}
+
+Indexer::~Indexer() {
+    stop();
+}
+
+bool Indexer::start() {
+    if (running_) {
+        return false;
+    }
+    
+    running_ = true;
+    paused_ = false;
+    
+    // 启动工作线程
+    size_t num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 4;
+    
+    for (size_t i = 0; i < num_threads; ++i) {
+        worker_threads_.emplace_back(&Indexer::worker_thread, this);
+    }
+    
+    return true;
+}
+
+void Indexer::stop() {
+    if (!running_) {
+        return;
+    }
+    
+    running_ = false;
+    queue_cv_.notify_all();
+    
+    for (auto& thread : worker_threads_) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    
+    worker_threads_.clear();
+}
+
+void Indexer::pause() {
+    paused_ = true;
+}
+
+void Indexer::resume() {
+    paused_ = false;
+    queue_cv_.notify_all();
+}
+
+void Indexer::enqueue_task(const IndexTask& task) {
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        task_queue_.push(task);
+    }
+    queue_cv_.notify_one();
+}
+
+void Indexer::set_index_callback(IndexCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    index_callback_ = std::move(callback);
+}
+
+void Indexer::set_error_callback(ErrorCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    error_callback_ = std::move(callback);
+}
+
+size_t Indexer::pending_tasks() const {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    return task_queue_.size();
+}
+
+void Indexer::register_extractor(std::unique_ptr<ContentExtractor> extractor) {
+    extractors_.push_back(std::move(extractor));
+}
+
+void Indexer::worker_thread() {
+    while (running_) {
+        IndexTask task;
+        
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cv_.wait(lock, [this] { 
+                return !running_ || (!task_queue_.empty() && !paused_); 
+            });
+            
+            if (!running_) {
+                break;
+            }
+            
+            if (task_queue_.empty()) {
+                continue;
+            }
+            
+            task = task_queue_.front();
+            task_queue_.pop();
+        }
+        
+        process_task(task);
+    }
+}
+
+void Indexer::process_task(const IndexTask& task) {
+    try {
+        if (task.type == IndexTask::Type::REMOVE) {
+            // 移除文件的处理逻辑
+            std::lock_guard<std::mutex> lock(hash_mutex_);
+            file_hashes_.erase(task.path);
+            return;
+        }
+        
+        // 检查文件是否存在
+        if (!fs::exists(task.path)) {
+            return;
+        }
+        
+        // 计算文件哈希
+        std::ifstream file(task.path, std::ios::binary);
+        if (!file) {
+            throw std::runtime_error("Cannot open file");
+        }
+        
+        MD5_CTX md5_ctx;
+        MD5_Init(&md5_ctx);
+        
+        char buffer[8192];
+        while (file.read(buffer, sizeof(buffer)) || file.gcount() > 0) {
+            MD5_Update(&md5_ctx, buffer, file.gcount());
+        }
+        
+        unsigned char hash[MD5_DIGEST_LENGTH];
+        MD5_Final(hash, &md5_ctx);
+        
+        std::string hash_str;
+        for (int i = 0; i < MD5_DIGEST_LENGTH; ++i) {
+            char hex[3];
+            snprintf(hex, sizeof(hex), "%02x", hash[i]);
+            hash_str += hex;
+        }
+        
+        // 检查是否需要重新索引
+        {
+            std::lock_guard<std::mutex> lock(hash_mutex_);
+            auto it = file_hashes_.find(task.path);
+            if (it != file_hashes_.end() && it->second == hash_str) {
+                return; // 文件未变化
+            }
+            file_hashes_[task.path] = hash_str;
+        }
+        
+        // 提取内容
+        std::string mime_type = detect_mime_type(task.path);
+        std::string content = extract_content(task.path, mime_type);
+        
+        if (content.empty()) {
+            return;
+        }
+        
+        // 生成嵌入向量
+        std::vector<float> embedding = embedding_gen_->generate(content);
+        
+        // 创建文档
+        Document doc;
+        doc.path = task.path;
+        doc.content = content;
+        doc.mime_type = mime_type;
+        doc.mtime = task.mtime;
+        doc.embedding = std::move(embedding);
+        
+        // 回调
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        if (index_callback_) {
+            index_callback_(doc);
+        }
+        
+    } catch (const std::exception& e) {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        if (error_callback_) {
+            error_callback_(task.path, e.what());
+        }
+    }
+}
+
+std::string Indexer::extract_content(const std::string& path, const std::string& mime_type) {
+    for (auto& extractor : extractors_) {
+        if (extractor->can_extract(mime_type)) {
+            return extractor->extract(path);
+        }
+    }
+    return "";
+}
+
+std::string Indexer::detect_mime_type(const std::string& path) {
+    // 简化的 MIME 类型检测
+    std::string ext = fs::path(path).extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    
+    static const std::unordered_map<std::string, std::string> mime_map = {
+        {".txt", "text/plain"},
+        {".md", "text/markdown"},
+        {".cpp", "text/x-c++"},
+        {".h", "text/x-c++"},
+        {".c", "text/x-c"},
+        {".py", "text/x-python"},
+        {".java", "text/x-java"},
+        {".js", "text/x-javascript"},
+        {".rs", "text/x-rust"},
+        {".go", "text/x-go"},
+        {".json", "application/json"},
+        {".xml", "application/xml"},
+        {".pdf", "application/pdf"}
+    };
+    
+    auto it = mime_map.find(ext);
+    return it != mime_map.end() ? it->second : "application/octet-stream";
+}
+
+} // namespace ai_fs
+} // namespace ainos
+```
+
+```cpp
+// search-daemon/vector_store.h
+#ifndef AINOS_AI_FS_VECTOR_STORE_H
+#define AINOS_AI_FS_VECTOR_STORE_H
+
+#include <vector>
+#include <string>
+#include <memory>
+#include <mutex>
+#include <unordered_map>
+
+namespace ainos {
+namespace ai_fs {
+
+// 向量存储项
+struct VectorItem {
+    std::string id;
+    std::vector<float> vector;
+    std::string metadata; // JSON 格式的元数据
+};
+
+// 搜索结果
+struct VectorSearchResult {
+    std::string id;
+    float distance;
+    std::string metadata;
+};
+
+// HNSW 参数
+struct HNSWParams {
+    size_t M = 16;              // 每层的最大连接数
+    size_t ef_construction = 200; // 构建时的搜索宽度
+    size_t ef_search = 50;       // 搜索时的宽度
+    size_t max_elements = 1000000;
+};
+
+// 向量存储接口
+class VectorStore {
+public:
+    virtual ~VectorStore() = default;
+    
+    // 初始化
+    virtual bool initialize(size_t dimension, const HNSWParams& params) = 0;
+    
+    // 添加向量
+    virtual bool add(const VectorItem& item) = 0;
+    virtual bool add_batch(const std::vector<VectorItem>& items) = 0;
+    
+    // 删除向量
+    virtual bool remove(const std::string& id) = 0;
+    
+    // 搜索
+    virtual std::vector<VectorSearchResult> search(
+        const std::vector<float>& query, 
+        size_t k) = 0;
+    
+    // 持久化
+    virtual bool save(const std::string& path) = 0;
+    virtual bool load(const std::string& path) = 0;
+    
+    // 统计信息
+    virtual size_t size() const = 0;
+    virtual size_t dimension() const = 0;
+};
+
+// HNSW 向量存储实现
+class HNSWVectorStore : public VectorStore {
+public:
+    HNSWVectorStore();
+    ~HNSWVectorStore() override;
+    
+    bool initialize(size_t dimension, const HNSWParams& params) override;
+    
+    bool add(const VectorItem& item) override;
+    bool add_batch(const std::vector<VectorItem>& items) override;
+    
+    bool remove(const std::string& id) override;
+    
+    std::vector<VectorSearchResult> search(
+        const std::vector<float>& query, 
+        size_t k) override;
+    
+    bool save(const std::string& path) override;
+    bool load(const std::string& path) override;
+    
+    size_t size() const override;
+    size_t dimension() const override;
+    
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+    
+    mutable std::mutex mutex_;
+    std::unordered_map<std::string, size_t> id_to_label_;
+    std::unordered_map<size_t, std::string> label_to_id_;
+    std::unordered_map<std::string, std::string> metadata_store_;
+    size_t next_label_ = 0;
+};
+
+// 创建向量存储
+std::unique_ptr<VectorStore> create_vector_store();
+
+} // namespace ai_fs
+} // namespace ainos
+
+#endif // AINOS_AI_FS_VECTOR_STORE_H
+```
+
+```cpp
+// search-daemon/vector_store.cpp
+#include "vector_store.h"
+#include <fstream>
+#include <algorithm>
+#include <cmath>
+#include <queue>
+#include <random>
+
+namespace ainos {
+namespace ai_fs {
+
+// 简化的 HNSW 实现 (生产环境应使用 hnswlib)
+class HNSWVectorStore::Impl {
+public:
+    struct Node {
+        std::vector<float> vector;
+        std::vector<std::vector<size_t>> neighbors; // 每层的邻居
+    };
+    
+    Impl() = default;
+    
+    bool initialize(size_t dim, const HNSWParams& params) {
+        dimension_ = dim;
+        params_ = params;
+        nodes_.reserve(params.max_elements);
+        return true;
+    }
+    
+    size_t add_node(const std::vector<float>& vector) {
+        if (vector.size() != dimension_) {
+            return SIZE_MAX;
+        }
+        
+        size_t label = nodes_.size();
+        Node node;
+        node.vector = vector;
+        
+        // 确定层数 (指数分布)
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<> dis(0.0, 1.0);
+        
+        double ml = 1.0 / log(2.0);
+        int level = static_cast<int>(-log(dis(gen)) * ml);
+        level = std::min(level, 16); // 最大层数
+        
+        node.neighbors.resize(level + 1);
+        
+        if (nodes_.empty()) {
+            entry_point_ = label;
+            max_level_ = level;
+        } else {
+            // 在各层插入节点
+            std::vector<size_t> ep = {entry_point_};
+            
+            for (int lc = max_level_; lc > level; --lc) {
+                ep = search_layer(vector, ep, 1, lc);
+            }
+            
+            for (int lc = level; lc >= 0; --lc) {
+                ep = search_layer(vector, ep, params_.ef_construction, lc);
+                
+                size_t M = (lc == 0) ? params_.M * 2 : params_.M;
+                
+                // 选择邻居
+                std::vector<size_t> neighbors = select_neighbors(vector, ep, M);
+                node.neighbors[lc] = neighbors;
+                
+                // 双向连接
+                for (size_t neighbor : neighbors) {
+                    if (neighbor < nodes_.size()) {
+                        auto& neighbor_connections = nodes_[neighbor].neighbors[lc];
+                        neighbor_connections.push_back(label);
+                        
+                        // 修剪过长的连接
+                        if (neighbor_connections.size() > M) {
+                            prune_connections(nodes_[neighbor].vector, 
+                                            neighbor_connections, M);
+                        }
+                    }
+                }
+                
+                ep = neighbors;
+            }
+            
+            if (level > max_level_) {
+                max_level_ = level;
+                entry_point_ = label;
+            }
+        }
+        
+        nodes_.push_back(std::move(node));
+        return label;
+    }
+    
+    std::vector<std::pair<size_t, float>> search(
+        const std::vector<float>& query, size_t k) {
+        
+        if (nodes_.empty()) {
+            return {};
+        }
+        
+        std::vector<size_t> ep = {entry_point_};
+        
+        for (int lc = max_level_; lc > 0; --lc) {
+            ep = search_layer(query, ep, 1, lc);
+        }
+        
+        ep = search_layer(query, ep, std::max(params_.ef_search, k), 0);
+        
+        std::vector<std::pair<size_t, float>> results;
+        for (size_t i = 0; i < std::min(k, ep.size()); ++i) {
+            float dist = distance(query, nodes_[ep[i]].vector);
+            results.emplace_back(ep[i], dist);
+        }
+        
+        std::sort(results.begin(), results.end(), 
+                  [](const auto& a, const auto& b) { return a.second < b.second; });
+        
+        return results;
+    }
+    
+    size_t size() const { return nodes_.size(); }
+    size_t dimension() const { return dimension_; }
+    
+    const Node& get_node(size_t label) const { return nodes_[label]; }
+    
+private:
+    float distance(const std::vector<float>& a, const std::vector<float>& b) const {
+        float sum = 0.0f;
+        for (size_t i = 0; i < a.size(); ++i) {
+            float diff = a[i] - b[i];
+            sum += diff * diff;
+        }
+        return std::sqrt(sum);
+    }
+    
+    std::vector<size_t> search_layer(
+        const std::vector<float>& query,
+        const std::vector<size_t>& entry_points,
+        size_t ef,
+        int layer) {
+        
+        std::priority_queue<std::pair<float, size_t>> candidates;
+        std::priority_queue<std::pair<float, size_t>> w;
+        std::unordered_set<size_t> visited;
+        
+        for (size_t ep : entry_points) {
+            float dist = distance(query, nodes_[ep].vector);
+            candidates.emplace(-dist, ep);
+            w.emplace(dist, ep);
+            visited.insert(ep);
+        }
+        
+        while (!candidates.empty()) {
+            auto [neg_dist, current] = candidates.top();
+            candidates.pop();
+            
