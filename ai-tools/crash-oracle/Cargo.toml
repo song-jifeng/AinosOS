@@ -1,0 +1,20 @@
+[package]
+name = "crash-oracle"
+version = "0.1.0"
+description = "Crash Oracle - predictive crash detection using ML"
+authors = ["Ainos OS Team"]
+license = "MIT"
+edition = "2021"
+
+[[bin]]
+name = "crash-oracle"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+chrono = "0.4"
+colored = "2"

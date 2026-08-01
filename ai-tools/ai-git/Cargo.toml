@@ -1,0 +1,21 @@
+[package]
+name = "ai-git"
+version = "0.1.0"
+description = "AI Git - semantic version control with AI-powered commit messages, merge, and diff"
+authors = ["Ainos OS Team"]
+license = "MIT"
+edition = "2021"
+
+[[bin]]
+name = "ai-git"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+chrono = "0.4"
+colored = "2"

@@ -4,11 +4,23 @@
 obj-m += ai-scheduler.o
 obj-m += ai-syscalls.o
 obj-m += ai-vector-accel.o
+obj-m += proc-ai.o
+obj-m += self-heal.o
+obj-m += ai-kill.o
+obj-m += ai-tmpfs.o
+obj-m += ai-readahead.o
+obj-m += hotpatch.o
 
-# 如果有多个源文件组成一个模块
+# 多源文件模块
 ai-scheduler-objs := ai-scheduler-main.o ai-scheduler-policy.o
 ai-syscalls-objs := ai-syscalls-main.o
 ai-vector-accel-objs := ai-vector-accel-main.o
+proc-ai-objs := ai-proc/proc_ai.o
+self-heal-objs := ai-self-heal/self_heal.o
+ai-kill-objs := ai-kill/ai_kill.o
+ai-tmpfs-objs := ai-tmpfs/ai_tmpfs.o
+ai-readahead-objs := ai-readahead/ai_readahead.o
+hotpatch-objs := hotpatch/hotpatch.o
 
 # 编译标志
 ccflags-y := -I$(PWD)/include -O2 -Wall -Werror
@@ -27,7 +39,24 @@ install:
 debug:
 	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules EXTRA_CFLAGS="-DDEBUG -g"
 
-# 测试加载
+# AI 模块加载
+load-ai:
+	-sudo insmod ai-proc/proc_ai.ko 2>/dev/null || true
+	-sudo insmod ai-self-heal/self_heal.ko 2>/dev/null || true
+	-sudo insmod ai-kill/ai_kill.ko 2>/dev/null || true
+	-sudo insmod ai-tmpfs/ai_tmpfs.ko 2>/dev/null || true
+	-sudo insmod ai-readahead/ai_readahead.ko 2>/dev/null || true
+	-sudo insmod hotpatch/hotpatch.ko 2>/dev/null || true
+	lsmod | grep -E "proc_ai|self_heal|ai_kill|ai_tmpfs|ai_readahead|hotpatch"
+
+unload-ai:
+	-sudo rmmod hotpatch 2>/dev/null || true
+	-sudo rmmod ai_readahead 2>/dev/null || true
+	-sudo rmmod ai_tmpfs 2>/dev/null || true
+	-sudo rmmod ai_kill 2>/dev/null || true
+	-sudo rmmod self_heal 2>/dev/null || true
+	-sudo rmmod proc_ai 2>/dev/null || true
+
 test-load:
 	-sudo rmmod ai-scheduler 2>/dev/null || true
 	-sudo rmmod ai-syscalls 2>/dev/null || true
@@ -40,4 +69,4 @@ test-unload:
 	-sudo rmmod ai-scheduler 2>/dev/null || true
 	-sudo rmmod ai-vector-accel 2>/dev/null || true
 
-.PHONY: all clean install debug test-load test-unload
+.PHONY: all clean install debug load-ai unload-ai test-load test-unload

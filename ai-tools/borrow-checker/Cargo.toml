@@ -1,0 +1,19 @@
+[package]
+name = "borrow-checker"
+version = "0.1.0"
+description = "AI Borrow Checker - AI-assisted Rust borrow checker with better error messages and fix suggestions"
+authors = ["Ainos OS Team"]
+license = "MIT"
+edition = "2021"
+
+[[bin]]
+name = "cargo-ainos-borrow"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+colored = "2"
+regex = "1"
