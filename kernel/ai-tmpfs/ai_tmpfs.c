@@ -20,10 +20,11 @@
 //   │  └──────────────────┬──────────────────────────────┘   │
 //   │                     ▼                                   │
 //   │  ┌─────────────────────────────────────────────────┐   │
-//   │  │  热/温/冷分类                                    │   │
-//   │  │  HOT:  access ≥ 5 且 freq ≥ 10/min              │   │
-//   │  │  WARM: access ≥ 2                               │   │
+//   │  │  热/温/冷分类 (自适应阈值)                       │   │
+//   │  │  HOT:  access ≥ 自适应阈值                       │   │
+//   │  │  WARM: access ≥ 自适应阈值                       │   │
 //   │  │  COLD: 其他                                     │   │
+//   │  │  • 每 60s 定时器重新分类                         │   │
 //   │  └──────────────────┬──────────────────────────────┘   │
 //   │                     ▼                                   │
 //   │  ┌─────────────────────────────────────────────────┐   │
@@ -38,6 +39,16 @@
 //   │  │  status | files | config                        │   │
 //   │  └─────────────────────────────────────────────────┘   │
 //   └─────────────────────────────────────────────────────────┘
+//
+// 锁规则:
+//   ------------------------------------------------------------------
+//   sbi->lru_lock: 保护所有 LRU 列表操作 (新增/删除/遍历/移动)
+//   info->lock:    保护每个 inode 的分类和统计
+//   ------------------------------------------------------------------
+//   嵌套顺序: info->lock -> sbi->lru_lock (仅在 update_classification 中)
+//   禁止在持有 lru_lock 时获取 info->lock，以避免潜在的死锁。
+//   Shrinker 回调在 shrinker_rwsem 下调用，其中再获取 lru_lock。
+//   绝不在持有 lru_lock 时申请 shrinker_rwsem。
 //
 // 挂载:
 //   mount -t ai_tmpfs none /mnt/ai-tmpfs
@@ -69,6 +80,7 @@
 #include <linux/string.h>
 #include <linux/file.h>
 #include <linux/cred.h>
+#include <linux/workqueue.h>
 
 #include "ai_tmpfs.h"
 
@@ -165,12 +177,17 @@ struct ai_tmpfs_sb_info {
     unsigned int    hot_access_min;
     unsigned int    hot_freq_min;
     unsigned int    clean_interval;
+    unsigned int    warm_access_min;    /* 自适应温数据阈值 */
 
     /* 模块启动时间 */
     unsigned long   start_jiffies;
 
     /* Shrinker */
     struct shrinker shrinker;
+
+    /* 周期性重新分类工作 */
+    struct delayed_work reclassify_work;
+    bool                shutting_down;    /* 防止卸载时工作队列重新调度 */
 };
 
 /* 文件系统上下文 */
@@ -209,6 +226,30 @@ static const char *class_name(enum ai_tmpfs_class c)
 }
 
 /* ================================================================
+ * 自适应阈值
+ * ================================================================ */
+
+/* 根据文件总数动态调整热/温/冷分类阈值 */
+static void update_adaptive_thresholds(struct ai_tmpfs_sb_info *sbi)
+{
+    u64 total = (u64)atomic64_read(&sbi->files_total);
+
+    if (total < 100) {
+        /* 少量文件: 更敏感的分类 */
+        sbi->hot_access_min = 3;
+        sbi->warm_access_min = 1;
+    } else if (total <= 1000) {
+        /* 中等数量: 默认阈值 */
+        sbi->hot_access_min = 5;
+        sbi->warm_access_min = 2;
+    } else {
+        /* 大量文件: 更高阈值避免频繁重分类 */
+        sbi->hot_access_min = 10;
+        sbi->warm_access_min = 5;
+    }
+}
+
+/* ================================================================
  * 分类引擎
  * ================================================================ */
 
@@ -232,7 +273,7 @@ static enum ai_tmpfs_class classify_inode(struct ai_tmpfs_inode_info *info,
         return AI_TMPFS_HOT;
 
     /* 温数据: 有多次访问 */
-    if (count >= AI_TMPFS_WARM_ACCESS_MIN)
+    if (count >= sbi->warm_access_min)
         return AI_TMPFS_WARM;
 
     return AI_TMPFS_COLD;
@@ -348,6 +389,56 @@ static void track_access(struct inode *inode, bool is_write)
 }
 
 /* ================================================================
+ * 周期性重新分类
+ * ================================================================ */
+
+/* 每 60 秒执行一次: 更新自适应阈值 + 重新扫描所有文件分类 */
+static void reclassify_work_fn(struct work_struct *work)
+{
+    struct ai_tmpfs_sb_info *sbi = container_of(work,
+        struct ai_tmpfs_sb_info, reclassify_work.work);
+    struct ai_tmpfs_inode_info *info, *tmp;
+    struct list_head candidates;
+
+    /* 1. 更新自适应阈值 */
+    update_adaptive_thresholds(sbi);
+
+    /* 2. 将所有 inode 从 LRU 摘下，清空分类统计 */
+    INIT_LIST_HEAD(&candidates);
+
+    spin_lock(&sbi->lru_lock);
+    list_splice_init(&sbi->lru_cold, &candidates);
+    list_splice_init(&sbi->lru_warm, &candidates);
+    list_splice_init(&sbi->lru_hot, &candidates);
+    atomic64_set(&sbi->files_cold, 0);
+    atomic64_set(&sbi->files_warm, 0);
+    atomic64_set(&sbi->files_hot, 0);
+    atomic64_set(&sbi->bytes_cold, 0);
+    atomic64_set(&sbi->bytes_warm, 0);
+    atomic64_set(&sbi->bytes_hot, 0);
+    spin_unlock(&sbi->lru_lock);
+
+    /* 3. 重新评估每个 inode 的分类 */
+    list_for_each_entry_safe(info, tmp, &candidates, lru_node) {
+        struct inode *inode = info->inode;
+        if (!inode)
+            continue;
+
+        /*
+         * 重新计算分类并将 inode 重新插入正确的 LRU 列表。
+         * update_classification() 会获得 sbi->lru_lock 并完成移动。
+         * 此时 info->lru_node 仍在 candidates 临时列表上，
+         * update_classification() 内部的 list_del_init() 会将其摘下。
+         */
+        update_classification(inode);
+    }
+
+    /* 4. 重新调度 (每 60 秒)，除非正在卸载 */
+    if (!sbi->shutting_down)
+        schedule_delayed_work(&sbi->reclassify_work, HZ * 60);
+}
+
+/* ================================================================
  * 文件操作
  * ================================================================ */
 
@@ -370,10 +461,10 @@ static ssize_t ai_tmpfs_read(struct file *file, char __user *buf,
     if (!info || !sbi)
         return -EIO;
 
+    /* simple_read_from_buffer 已经更新 *ppos，不要再加 */
     ret = simple_read_from_buffer(buf, len, ppos, info->data, info->data_size);
 
     if (ret > 0) {
-        *ppos += ret;
         track_access(inode, false);
         if (info->classification == AI_TMPFS_HOT)
             atomic64_inc(&sbi->hits_hot);
@@ -400,23 +491,47 @@ static ssize_t ai_tmpfs_write(struct file *file, const char __user *buf,
     if (new_size > sbi->max_file_size)
         return -EFBIG;
 
-    /* 扩展缓冲区 */
+    /* 扩展缓冲区，用 krealloc 保留已有数据 */
     if (new_size > info->alloc_size) {
         size_t new_alloc = roundup_pow_of_two(max(new_size, (size_t)PAGE_SIZE));
-        void *new_data = krealloc(info->data, new_alloc, GFP_KERNEL);
+        void *new_data;
+
+        if (info->data) {
+            new_data = krealloc(info->data, new_alloc, GFP_KERNEL);
+        } else {
+            /* 首次分配用 kzalloc 避免泄漏未初始化内核内存 */
+            new_data = kzalloc(new_alloc, GFP_KERNEL);
+        }
         if (!new_data)
             return -ENOMEM;
+
+        /* krealloc 新增的空间未初始化，清零 */
+        if (new_alloc > info->alloc_size)
+            memset(new_data + info->alloc_size, 0,
+                   new_alloc - info->alloc_size);
+
         info->data = new_data;
         info->alloc_size = new_alloc;
     }
 
+    /* 如果写入位置在文件末尾之后，填补零 */
+    if (*ppos > info->data_size && info->data)
+        memset(info->data + info->data_size, 0, *ppos - info->data_size);
+
+    old_size = info->data_size;
+
     ret = simple_write_to_buffer(info->data, info->alloc_size, ppos,
                                   buf, len);
     if (ret > 0) {
-        old_size = info->data_size;
         if (*ppos > info->data_size)
             info->data_size = *ppos;
         inode->i_size = info->data_size;
+        inode->i_mtime = inode->i_ctime = current_time(inode);
+
+        /* 更新总字节数统计 */
+        if (info->data_size > old_size)
+            atomic64_add(info->data_size - old_size, &sbi->bytes_total);
+
         track_access(inode, true);
     }
 
@@ -549,6 +664,8 @@ static int ai_tmpfs_unlink(struct inode *dir, struct dentry *dentry)
     spin_lock(&sbi->lru_lock);
     list_del_init(&info->lru_node);
     atomic64_dec(&sbi->files_total);
+    if (inode->i_size > 0)
+        atomic64_sub(inode->i_size, &sbi->bytes_total);
     switch (info->classification) {
     case AI_TMPFS_HOT:  atomic64_dec(&sbi->files_hot);  break;
     case AI_TMPFS_WARM: atomic64_dec(&sbi->files_warm); break;
@@ -556,15 +673,10 @@ static int ai_tmpfs_unlink(struct inode *dir, struct dentry *dentry)
     }
     spin_unlock(&sbi->lru_lock);
 
-    /* 释放数据缓冲区 */
-    if (info->data) {
-        kfree(info->data);
-        info->data = NULL;
-    }
-
-    /* 清理 inode 私有数据 */
-    inode->i_private = NULL;
-    kfree(info);
+    /*
+     * 不要在这里释放 info/data —— VFS 的 evict_inode/destroy_inode
+     * 回调会负责清理资源。此处只从 LRU 移除并降低 nlink。
+     */
 
     /* 标记 inode 为已删除 */
     inode->i_nlink = 0;
@@ -580,16 +692,31 @@ static int ai_tmpfs_rmdir(struct inode *dir, struct dentry *dentry)
 #endif
 {
     struct inode *inode = d_inode(dentry);
+    struct ai_tmpfs_inode_info *info = AI_TMPFS_I(inode);
+    struct ai_tmpfs_sb_info *sbi = inode->i_sb ? AI_TMPFS_SB(inode->i_sb) : NULL;
 
     if (!simple_empty(dentry))
         return -ENOTEMPTY;
 
-    /* 清理 inode 私有数据 */
-    struct ai_tmpfs_inode_info *info = AI_TMPFS_I(inode);
-    if (info) {
-        inode->i_private = NULL;
-        kfree(info);
+    /* 从 LRU 中移除 */
+    if (info && sbi) {
+        spin_lock(&sbi->lru_lock);
+        list_del_init(&info->lru_node);
+        atomic64_dec(&sbi->files_total);
+        if (inode->i_size > 0)
+            atomic64_sub(inode->i_size, &sbi->bytes_total);
+        switch (info->classification) {
+        case AI_TMPFS_HOT:  atomic64_dec(&sbi->files_hot);  break;
+        case AI_TMPFS_WARM: atomic64_dec(&sbi->files_warm); break;
+        case AI_TMPFS_COLD: atomic64_dec(&sbi->files_cold); break;
+        }
+        spin_unlock(&sbi->lru_lock);
     }
+
+    /*
+     * 不要在这里释放 info —— VFS 的 destroy_inode 回调会负责。
+     * 此处只从 LRU 移除并降低 nlink。
+     */
 
     inode->i_nlink = 0;
     return 0;
@@ -607,9 +734,47 @@ static const struct inode_operations ai_tmpfs_dir_inode_operations = {
  * 超级块操作
  * ================================================================ */
 
+/*
+ * evict_inode: VFS 在从缓存中逐出 inode 时调用。
+ * 释放文件数据缓冲区。info 结构体由 destroy_inode 释放。
+ *
+ * 被 ai_tmpfs_unlink/rmdir 删除的 inode 的 i_private 已在
+ * 删除路径中被置为 NULL，此处只需调用 clear_inode。
+ */
+static void ai_tmpfs_evict_inode(struct inode *inode)
+{
+    struct ai_tmpfs_inode_info *info = AI_TMPFS_I(inode);
+
+    if (info) {
+        /* 释放数据缓冲区 */
+        if (info->data) {
+            kfree(info->data);
+            info->data = NULL;
+        }
+        info->data_size = 0;
+        info->alloc_size = 0;
+    }
+
+    clear_inode(inode);
+}
+
+/*
+ * destroy_inode: VFS 在 inode 引用计数归零后释放内存前调用。
+ * 释放每个 inode 的跟踪信息结构体。
+ */
+static void ai_tmpfs_destroy_inode(struct inode *inode)
+{
+    struct ai_tmpfs_inode_info *info = AI_TMPFS_I(inode);
+
+    kfree(info);
+    inode->i_private = NULL;
+}
+
 static const struct super_operations ai_tmpfs_super_operations = {
     .statfs       = simple_statfs,
     .drop_inode   = generic_delete_inode,
+    .evict_inode  = ai_tmpfs_evict_inode,
+    .destroy_inode = ai_tmpfs_destroy_inode,
 };
 
 static int ai_tmpfs_fill_super(struct super_block *sb, void *data, int silent)
@@ -638,6 +803,7 @@ static int ai_tmpfs_fill_super(struct super_block *sb, void *data, int silent)
     sbi->hot_access_min = hot_access_min;
     sbi->hot_freq_min = hot_freq_min;
     sbi->clean_interval = clean_interval;
+    sbi->warm_access_min = AI_TMPFS_WARM_ACCESS_MIN;
     sbi->start_jiffies = jiffies;
 
     /* 创建根目录 */
@@ -661,11 +827,19 @@ static int ai_tmpfs_fill_super(struct super_block *sb, void *data, int silent)
     }
 
     /* 注册 shrinker */
-    sbi->shrinker.count_objects = NULL;  /* 使用新 API */
-    sbi->shrinker.scan_objects = NULL;
-#ifdef CONFIG_SHRINKER
-    /* 简化: 不注册 shrinker，避免版本兼容问题 */
+    sbi->shrinker.count_objects = ai_tmpfs_count_objects;
+    sbi->shrinker.scan_objects = ai_tmpfs_scan_objects;
+    sbi->shrinker.seeks = DEFAULT_SEEKS;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+    if (register_shrinker(&sbi->shrinker, "ai_tmpfs"))
+        pr_warn("ai-tmpfs: failed to register shrinker\n");
+#else
+    register_shrinker(&sbi->shrinker);
 #endif
+
+    /* 初始化并调度周期性重新分类工作 (每 60 秒) */
+    INIT_DELAYED_WORK(&sbi->reclassify_work, reclassify_work_fn);
+    schedule_delayed_work(&sbi->reclassify_work, HZ * 60);
 
     /* 保存 sb 引用用于 /proc */
     spin_lock(&g_ai_tmpfs.sb_lock);
@@ -689,23 +863,31 @@ static void ai_tmpfs_kill_sb(struct super_block *sb)
 {
     struct ai_tmpfs_sb_info *sbi = AI_TMPFS_SB(sb);
 
-    /* 清理 inode 跟踪信息 */
-    struct inode *inode;
-    struct list_head *p, *n;
+    if (!sbi)
+        return;
 
-    /* 遍历所有 inode 并释放 i_private */
-    /* 注意: 在 kill_sb 中，所有 inode 已被释放，
-     * 我们只需要释放 sbi */
+    /* 1. 设置关闭标志，防止工作队列重新调度 */
+    sbi->shutting_down = true;
+    smp_mb();  /* 确保 shutting_down 对其他 CPU 可见 */
 
+    /* 2. 取消周期性重新分类工作 */
+    cancel_delayed_work_sync(&sbi->reclassify_work);
+
+    /* 3. 注销 shrinker */
+    unregister_shrinker(&sbi->shrinker);
+
+    /* 3. 清理 /proc 引用 */
     spin_lock(&g_ai_tmpfs.sb_lock);
     if (g_ai_tmpfs.last_sb == sb)
         g_ai_tmpfs.last_sb = NULL;
     spin_unlock(&g_ai_tmpfs.sb_lock);
 
+    /* 4. 先驱逐所有 dentry/inode (触发 evict_inode/destroy_inode) */
+    kill_litter_super(sb);
+
+    /* 5. 最后释放 sbi */
     kfree(sbi);
     sb->s_fs_info = NULL;
-
-    kill_litter_super(sb);
 }
 
 static struct file_system_type ai_tmpfs_fs_type = {
@@ -716,33 +898,54 @@ static struct file_system_type ai_tmpfs_fs_type = {
 };
 
 /* ================================================================
- * 冷数据驱逐
+ * Shrinker 回调 (内存压力时驱逐冷数据)
+ * ================================================================
+ *
+ * count_objects: 返回可回收的冷文件数
+ * scan_objects:  释放冷文件的数据缓冲区
+ *
+ * 锁规则:
+ *   1. shrinker_rwsem (kernel shrinker 框架持有)
+ *   2. sbi->lru_lock (本模块)
+ * 绝不在持有 lru_lock 时申请 shrinker_rwsem。
+ *
+ * 注意: 此处只释放数据缓冲区，不释放 inode 或 info 结构。
+ * 真正的 inode 清理由 evict_inode/destroy_inode 回调完成。
  * ================================================================ */
 
-/* 驱逐 LRU 中的冷文件 */
-static unsigned long evict_cold_files(struct super_block *sb,
-                                       unsigned long nr_to_scan)
+static unsigned long ai_tmpfs_count_objects(struct shrinker *shrinker,
+                                            struct shrink_control *sc)
 {
-    struct ai_tmpfs_sb_info *sbi = AI_TMPFS_SB(sb);
+    struct ai_tmpfs_sb_info *sbi = container_of(shrinker,
+        struct ai_tmpfs_sb_info, shrinker);
+
+    /* 返回冷文件数量，没有冷文件时返回 0 */
+    return (unsigned long)atomic64_read(&sbi->files_cold);
+}
+
+static unsigned long ai_tmpfs_scan_objects(struct shrinker *shrinker,
+                                           struct shrink_control *sc)
+{
+    struct ai_tmpfs_sb_info *sbi = container_of(shrinker,
+        struct ai_tmpfs_sb_info, shrinker);
     struct ai_tmpfs_inode_info *info, *tmp;
-    unsigned long evicted = 0;
+    unsigned long freed = 0;
     unsigned long flags;
 
     if (!sbi)
-        return 0;
+        return SHRINK_STOP;
 
     spin_lock_irqsave(&sbi->lru_lock, flags);
 
-    /* 从冷数据 LRU 头部开始驱逐 */
     list_for_each_entry_safe(info, tmp, &sbi->lru_cold, lru_node) {
-        if (evicted >= nr_to_scan)
+        if (freed >= sc->nr_to_scan)
             break;
 
         struct inode *inode = info->inode;
         if (!inode)
             continue;
 
-        /* 跳过正在使用的文件 */
+        /* 跳过正在使用的文件 (i_count==1 仅 dentry 引用) */
         if (atomic_read(&inode->i_count) > 1)
             continue;
 
@@ -750,33 +953,36 @@ static unsigned long evict_cold_files(struct super_block *sb,
         if (time_before(jiffies, info->last_access_jiffies + HZ * 60))
             continue;
 
-        /* 驱逐 */
-        list_del_init(&info->lru_node);
-        atomic64_dec(&sbi->files_total);
-        atomic64_dec(&sbi->files_cold);
-        if (inode->i_size > 0)
-            atomic64_sub(inode->i_size, &sbi->bytes_cold);
-        atomic64_inc(&sbi->evictions_total);
-
-        /* 释放 inode 数据 */
+        /* 释放数据缓冲区 */
         if (info->data) {
             kfree(info->data);
             info->data = NULL;
         }
 
-        /* 清除私有数据 */
-        inode->i_private = NULL;
-        kfree(info);
+        /* 更新字节统计: 文件大小已归零 */
+        if (inode->i_size > 0) {
+            atomic64_sub(inode->i_size, &sbi->bytes_total);
+            atomic64_sub(inode->i_size, &sbi->bytes_cold);
+        }
+        info->data_size = 0;
+        info->alloc_size = 0;
+        inode->i_size = 0;
 
-        evicted++;
+        /* 移到 LRU 尾部 (标记为已驱逐，下次优先) */
+        list_move_tail(&info->lru_node, &sbi->lru_cold);
+
+        atomic64_inc(&sbi->evictions_total);
+        freed++;
     }
 
     spin_unlock_irqrestore(&sbi->lru_lock, flags);
 
-    if (evicted > 0)
-        pr_debug("ai-tmpfs: evicted %lu cold files\n", evicted);
+    atomic64_add(freed, &sbi->shrinker_calls);
 
-    return evicted;
+    if (freed > 0)
+        pr_debug("ai-tmpfs: shrinker freed %lu cold files\n", freed);
+
+    return freed;
 }
 
 /* ================================================================
@@ -955,6 +1161,7 @@ static int proc_config_show(struct seq_file *m, void *v)
     seq_printf(m, "%-24s = %u bytes\n", "max_file_size", sbi->max_file_size);
     seq_printf(m, "%-24s = %u\n", "hot_access_min", sbi->hot_access_min);
     seq_printf(m, "%-24s = %u/min\n", "hot_freq_min", sbi->hot_freq_min);
+    seq_printf(m, "%-24s = %u\n", "warm_access_min", sbi->warm_access_min);
     seq_printf(m, "%-24s = %u sec\n", "clean_interval", sbi->clean_interval);
 
     return 0;
@@ -1000,6 +1207,8 @@ static ssize_t proc_config_write(struct file *file,
         sbi->hot_access_min = val;
     else if (strcmp(cmd, "hot_freq_min") == 0)
         sbi->hot_freq_min = val;
+    else if (strcmp(cmd, "warm_access_min") == 0)
+        sbi->warm_access_min = val;
     else if (strcmp(cmd, "clean_interval") == 0)
         sbi->clean_interval = val;
     else

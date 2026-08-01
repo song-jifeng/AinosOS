@@ -72,6 +72,9 @@ struct ai_ra_prediction ai_readahead_record(const char *filename,
 /* 通知预测正确 (外部确认) */
 void ai_readahead_confirm(const char *filename, unsigned long offset);
 
+/* 通知预测错误 (负确认, 降低置信度) */
+void ai_readahead_confirm_negative(const char *filename, unsigned long offset);
+
 /* 批量记录访问 */
 void ai_readahead_record_batch(const char *filename,
                                 unsigned long *offsets, unsigned int count);

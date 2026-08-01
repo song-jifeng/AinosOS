@@ -193,6 +193,36 @@ static struct ra_entry *ra_create(const char *name)
     if (!entry)
         return NULL;
 
+    /* 检查 hash 链长度: 如果链过长，先淘汰一个旧条目 */
+    {
+        struct ra_entry *chain_entry;
+        int chain_len = 0;
+        unsigned long __flags;
+        spin_lock_irqsave(&g_ra.lru_lock, __flags);
+        hlist_for_each_entry(chain_entry, &g_ra.hash_table[hash], hash_node) {
+            if (chain_entry->valid) chain_len++;
+        }
+        /* 最大链长: 8，超过则淘汰同桶中最旧的 */
+        if (chain_len >= 8) {
+            struct ra_entry *victim = NULL;
+            list_for_each_entry_reverse(chain_entry, &g_ra.lru_list, lru_node) {
+                if (chain_entry->valid &&
+                    ra_hash(chain_entry->name) == hash) {
+                    victim = chain_entry;
+                    break;
+                }
+            }
+            if (victim) {
+                hlist_del(&victim->hash_node);
+                list_del(&victim->lru_node);
+                victim->valid = false;
+                g_ra.entry_count--;
+                kfree(victim);
+            }
+        }
+        spin_unlock_irqrestore(&g_ra.lru_lock, __flags);
+    }
+
     strscpy(entry->name, name, sizeof(entry->name));
     entry->pattern.count = 0;
     entry->pattern.model = AI_RA_MODEL_UNKNOWN;
@@ -278,8 +308,9 @@ static void analyze_pattern(struct ai_ra_pattern *pat, unsigned long offset)
             pat->stride_confidence = min(pat->stride_confidence + 15, 100u);
         }
     }
-    /* 3. 检查固定步长 */
-    else if (pat->count >= 2) {
+    /// 在 analyze_pattern() 中，检查步长一致性时增加最少样本数要求
+    /* 3. 检查固定步长 — 需要至少 3 个点才能确认步长模式 */
+    else if (pat->count >= 3) {
         unsigned long prev = pat->offsets[pat->count - 2];
         unsigned long s1 = last - prev;
         unsigned long s2 = offset - last;
@@ -479,6 +510,42 @@ void ai_readahead_record_batch(const char *filename,
 }
 EXPORT_SYMBOL_GPL(ai_readahead_record_batch);
 
+/// 在 ai_readahead_confirm() 后增加负确认函数
+void ai_readahead_confirm_negative(const char *filename, unsigned long offset)
+{
+    struct ra_entry *entry;
+    unsigned long flags;
+
+    if (!filename || !g_ra.initialized)
+        return;
+
+    entry = ra_lookup(filename);
+    if (!entry)
+        return;
+
+    spin_lock_irqsave(&entry->lock, flags);
+
+    /* 预测错误: 降低置信度 */
+    if (entry->pattern.stride_confidence >= 10)
+        entry->pattern.stride_confidence -= 10;
+    else
+        entry->pattern.stride_confidence = 0;
+
+    /* 如果连续错误太多，降级为随机模式 */
+    if (entry->total_predictions > 5 &&
+        entry->correct_predictions * 100 / entry->total_predictions < 30) {
+        entry->pattern.model = AI_RA_MODEL_RANDOM;
+    }
+
+    spin_lock(&g_ra.stats_lock);
+    g_ra.stats.false_predictions++;
+    spin_unlock(&g_ra.stats_lock);
+
+    spin_unlock_irqrestore(&entry->lock, flags);
+}
+EXPORT_SYMBOL_GPL(ai_readahead_confirm_negative);
+
+/// 清除指定文件的跟踪
 void ai_readahead_clear_file(const char *filename)
 {
     struct ra_entry *entry;

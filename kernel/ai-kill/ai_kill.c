@@ -65,6 +65,7 @@
 #include <linux/version.h>
 #include <linux/timekeeping.h>
 #include <linux/ctype.h>
+#include <linux/rcupdate.h>
 
 #include "ai_kill.h"
 
@@ -154,6 +155,9 @@ struct behavior_entry {
     unsigned int sample_idx;   /* 当前写入位置 */
     unsigned int sample_count; /* 已采样次数 */
     unsigned long last_jiffies;
+    /* 内存泄漏检测: 基线 RSS 和移动平均状态 */
+    u64    rss_baseline;       /* 基线 RSS (首次稳定后的值) */
+    bool   baseline_valid;     /* 基线是否已建立 */
 };
 
 /* 杀戮历史 */
@@ -180,7 +184,6 @@ static struct {
 
     /* 统计 */
     struct ai_kill_stats stats;
-    bool stats_initialized;
 
     /* 杀戮历史 */
     struct kill_history history;
@@ -192,6 +195,9 @@ static struct {
 
     /* 速率限制 */
     unsigned long last_kill_jiffies;
+    unsigned int  kills_this_minute;       /* 当前分钟内的杀戮数 */
+    unsigned int  kills_per_minute_max;    /* 每分钟最大杀戮数 (默认 10) */
+    unsigned long kills_minute_start;      /* 当前分钟的开始 jiffies */
 
     /* /proc 条目 */
     struct proc_dir_entry *proc_dir;
@@ -224,7 +230,58 @@ static const char *action_name(enum ai_kill_action action)
 
 /* ================================================================
  * 白名单管理
+ *
+ * 白名单检查在评分之前执行, 确保关键进程不被误杀.
+ * 默认保护: init (pid=1) 和核心系统进程.
  * ================================================================ */
+
+/* 默认受保护的系统进程名列表 */
+static const char * const default_protected_processes[] = {
+    "init",            /* 容器/传统 init */
+    "systemd",         /* 现代 init/systemd */
+    "sshd",            /* SSH 守护进程 */
+    "cron",            /* 定时任务 */
+    "rsyslogd",        /* 系统日志 */
+    "dbus-daemon",     /* D-Bus 消息总线 */
+    "NetworkManager",  /* 网络管理 */
+    "login",           /* 登录进程 */
+    "getty",           /* 终端 */
+    "agetty",          /* 替代 getty */
+    "auditd",          /* 审计 */
+    "polkitd",         /* 授权管理器 */
+    "udevd",           /* 设备管理 */
+    "systemd-journald",/* 日志 */
+    "systemd-logind",  /* 登录管理 */
+    "systemd-udevd",   /* 设备管理 */
+    "systemd-resolved",/* DNS 解析 */
+    "systemd-timesyncd", /* 时间同步 */
+    "kthreadd",        /* 内核线程守护进程 */
+    "rcu_sched",       /* RCU 内核线程 */
+    "watchdogd",       /* 看门狗 */
+    NULL               /* 哨兵 */
+};
+
+/* 添加默认系统保护进程到白名单 */
+static void whitelist_add_defaults(void)
+{
+    int count = g_ai_kill.whitelist_count;
+    for (int i = 0; default_protected_processes[i] && count < WHITELIST_MAX; i++) {
+        bool already = false;
+        for (int j = 0; j < count; j++) {
+            if (strncmp(g_ai_kill.whitelist[j],
+                        default_protected_processes[i], COMM_LEN) == 0) {
+                already = true;
+                break;
+            }
+        }
+        if (!already) {
+            strscpy(g_ai_kill.whitelist[count],
+                    default_protected_processes[i], COMM_LEN);
+            count++;
+        }
+    }
+    g_ai_kill.whitelist_count = count;
+}
 
 static int whitelist_init(const char *str)
 {
@@ -234,33 +291,43 @@ static int whitelist_init(const char *str)
 
     g_ai_kill.whitelist_count = 0;
 
-    if (!str || strlen(str) == 0)
-        return 0;
+    /* 先添加用户配置的白名单 */
+    if (str && strlen(str) > 0) {
+        strscpy(buf, str, sizeof(buf));
 
-    strscpy(buf, str, sizeof(buf));
-
-    token = strsep(&buf, ",");
-    while (token && count < WHITELIST_MAX) {
-        /* 去除前后空格 */
-        while (*token == ' ') token++;
-        char *end = token + strlen(token) - 1;
-        while (end > token && *end == ' ') end--;
-        *(end + 1) = '\0';
-
-        if (strlen(token) > 0) {
-            strscpy(g_ai_kill.whitelist[count], token, COMM_LEN);
-            count++;
-            pr_info("ai-kill: whitelist: '%s'\n", token);
-        }
         token = strsep(&buf, ",");
+        while (token && count < WHITELIST_MAX) {
+            /* 去除前后空格 */
+            while (*token == ' ') token++;
+            char *end = token + strlen(token) - 1;
+            while (end > token && *end == ' ') end--;
+            *(end + 1) = '\0';
+
+            if (strlen(token) > 0) {
+                strscpy(g_ai_kill.whitelist[count], token, COMM_LEN);
+                count++;
+                pr_info("ai-kill: whitelist: '%s'\n", token);
+            }
+            token = strsep(&buf, ",");
+        }
     }
 
     g_ai_kill.whitelist_count = count;
-    return count;
+
+    /* 然后添加默认系统保护进程 (确保关键进程始终受保护) */
+    whitelist_add_defaults();
+
+    pr_info("ai-kill: whitelist initialized with %d entries\n",
+            g_ai_kill.whitelist_count);
+    return g_ai_kill.whitelist_count;
 }
 
 static bool whitelist_check(const char *comm)
 {
+    /* 保护空指针 */
+    if (!comm)
+        return true;
+
     for (int i = 0; i < g_ai_kill.whitelist_count; i++) {
         if (strncmp(comm, g_ai_kill.whitelist[i], COMM_LEN) == 0)
             return true;
@@ -282,38 +349,70 @@ EXPORT_SYMBOL_GPL(ai_kill_whitelist_add);
 
 /* ================================================================
  * 行为跟踪
+ *
+ * 锁顺序:
+ *   behavior_lock (spinlock_irqsave) -> RCU (rcu_read_lock)
+ *
+ * 行为跟踪表 (behavior_table) 使用 RCU 保护指针:
+ *   - 写入端: behavior_init() 用 rcu_assign_pointer() 赋值,
+ *             behavior_destroy() 用 rcu_assign_pointer(NULL) + synchronize_rcu() + kfree()
+ *   - 读取端: 所有路径用 rcu_dereference() 获取指针,
+ *             /proc 读路径额外包裹 rcu_read_lock()/rcu_read_unlock()
+ *   - 条目级操作: 统一由 behavior_lock (spinlock, irq-safe) 保护,
+ *                timer 上下文和 /proc 上下文均可安全使用
  * ================================================================ */
 
 static int behavior_init(void)
 {
-    g_ai_kill.behavior_table = kzalloc(
-        BEHAVIOR_TABLE_SIZE * sizeof(struct behavior_entry), GFP_KERNEL);
-    if (!g_ai_kill.behavior_table)
+    struct behavior_entry *table;
+
+    table = kzalloc(BEHAVIOR_TABLE_SIZE * sizeof(struct behavior_entry),
+                    GFP_KERNEL);
+    if (!table)
         return -ENOMEM;
 
     spin_lock_init(&g_ai_kill.behavior_lock);
+    rcu_assign_pointer(g_ai_kill.behavior_table, table);
     return 0;
 }
 
 static void behavior_destroy(void)
 {
-    kfree(g_ai_kill.behavior_table);
-    g_ai_kill.behavior_table = NULL;
+    struct behavior_entry *table;
+
+    /* 用 RCU 安全地移除指针, 等待所有读端完成后再释放 */
+    table = rcu_dereference_protected(g_ai_kill.behavior_table,
+                                      lockdep_is_held(&g_ai_kill.behavior_lock) ||
+                                      !g_ai_kill.initialized);
+    rcu_assign_pointer(g_ai_kill.behavior_table, NULL);
+    synchronize_rcu();
+    kfree(table);
 }
 
-/* 查找或创建行为条目 */
+/* 查找或创建行为条目
+ * 注意: 调用者必须持有 behavior_lock
+ */
 static struct behavior_entry *behavior_lookup(pid_t pid)
 {
-    unsigned int hash = (unsigned int)pid % BEHAVIOR_TABLE_SIZE;
-    struct behavior_entry *entry = &g_ai_kill.behavior_table[hash];
+    struct behavior_entry *table;
+    unsigned int hash;
+    struct behavior_entry *entry;
+    unsigned int start;
+
+    table = rcu_dereference(g_ai_kill.behavior_table);
+    if (!table)
+        return NULL;
+
+    hash = (unsigned int)pid % BEHAVIOR_TABLE_SIZE;
+    entry = &table[hash];
 
     /* 如果条目已被占用且不是同一个 PID，尝试线性探测 */
-    unsigned int start = hash;
+    start = hash;
     while (entry->pid != 0 && entry->pid != pid) {
         hash = (hash + 1) % BEHAVIOR_TABLE_SIZE;
         if (hash == start)
             return NULL; /* 表满了 */
-        entry = &g_ai_kill.behavior_table[hash];
+        entry = &table[hash];
     }
 
     return entry;
@@ -325,9 +424,6 @@ static void behavior_record(struct task_struct *task)
     struct behavior_entry *entry;
     struct mm_struct *mm;
     unsigned long flags;
-
-    if (!g_ai_kill.behavior_table)
-        return;
 
     /* 跳过内核线程 */
     if (task->flags & PF_KTHREAD)
@@ -370,6 +466,9 @@ static void behavior_record(struct task_struct *task)
     if (entry->sample_count < BEHAVIOR_SAMPLES)
         entry->sample_count++;
 
+    /* 更新 RSS 基线用于泄漏检测 */
+    update_rss_baseline(entry);
+
     spin_unlock_irqrestore(&g_ai_kill.behavior_lock, flags);
 }
 
@@ -379,9 +478,6 @@ static void behavior_cleanup(pid_t pid)
     struct behavior_entry *entry;
     unsigned long flags;
 
-    if (!g_ai_kill.behavior_table)
-        return;
-
     spin_lock_irqsave(&g_ai_kill.behavior_lock, flags);
     entry = behavior_lookup(pid);
     if (entry && entry->pid == pid) {
@@ -390,30 +486,104 @@ static void behavior_cleanup(pid_t pid)
     spin_unlock_irqrestore(&g_ai_kill.behavior_lock, flags);
 }
 
-/* 检测内存泄漏趋势 */
+/* 检测内存泄漏趋势 - 使用速率变化检测
+ *
+ * 原理:
+ *   - 维护一个 3 样本移动平均作为基线
+ *   - 仅当最新 RSS 超过移动平均 20% 且总增长 > 1MB 时标记泄漏
+ *   - 使用 rss_baseline 跟踪长期基线，避免误报短期波动
+ *
+ * 该算法比简单的"3 次连续增长"更可靠，因为:
+ *   1. 需要幅度条件 (20% + 1MB)，忽略微小波动
+ *   2. 基线跟踪避免系统性地把增长进程误判为泄漏
+ *   3. 移动平均平滑了瞬时尖峰
+ */
 static int detect_memory_leak(const struct behavior_entry *entry)
 {
+    u64 rss_now;
+    u64 moving_avg;
+    u64 baseline;
+    u64 growth_from_baseline;
+    unsigned int pct_above_avg;
+    unsigned int i, count;
+
     if (entry->sample_count < 3)
         return 0;
 
-    /* 检查最近 3 个样本的 RSS 趋势 */
-    unsigned int s0 = (entry->sample_idx - 3) % BEHAVIOR_SAMPLES;
-    unsigned int s1 = (entry->sample_idx - 2) % BEHAVIOR_SAMPLES;
-    unsigned int s2 = (entry->sample_idx - 1) % BEHAVIOR_SAMPLES;
+    /* 计算 3 样本移动平均 */
+    moving_avg = 0;
+    count = min(entry->sample_count, BEHAVIOR_SAMPLES);
+    for (i = 0; i < count; i++)
+        moving_avg += entry->samples[i].rss_bytes;
+    moving_avg /= count;
 
-    u64 rss0 = entry->samples[s0].rss_bytes;
-    u64 rss1 = entry->samples[s1].rss_bytes;
-    u64 rss2 = entry->samples[s2].rss_bytes;
+    /* 最新 RSS */
+    rss_now = entry->samples[(entry->sample_idx - 1) % BEHAVIOR_SAMPLES].rss_bytes;
 
-    /* 如果 RSS 持续增长 */
-    if (rss0 < rss1 && rss1 < rss2 && rss0 > 0) {
-        u64 growth = rss2 - rss0;
-        unsigned int pct = (unsigned int)(growth * 100 / rss0);
-        /* 增长率 > 20% 提示泄漏 */
-        return min(pct, 100);
+    /* 基线尚未建立: 用移动平均初始化 */
+    if (!entry->baseline_valid) {
+        /* 允许在第一次检测时静默建立基线，不触发警报 */
+        return 0;
     }
 
-    return 0;
+    baseline = entry->rss_baseline;
+
+    /* 条件 1: 最新 RSS 超过移动平均 20% 以上 */
+    if (moving_avg == 0)
+        return 0;
+    pct_above_avg = (unsigned int)((rss_now - min(rss_now, moving_avg)) * 100 / moving_avg);
+    if (pct_above_avg < 20)
+        return 0;
+
+    /* 条件 2: 从基线增长超过 1MB */
+    if (baseline == 0)
+        return 0;
+    growth_from_baseline = rss_now - min(rss_now, baseline);
+    if (growth_from_baseline < (u64)1024 * 1024)  /* < 1MB */
+        return 0;
+
+    /* 两个条件都满足: 计算泄漏分数 (0-100) */
+    {
+        unsigned int growth_pct = (unsigned int)(growth_from_baseline * 100 / baseline);
+        /* 增长率 20% -> 分数 20, 增长率 100%+ -> 分数 100 */
+        return min(growth_pct, 100u);
+    }
+}
+
+/* 更新 RSS 基线 (在 behavior_record 中定期调用) */
+static void update_rss_baseline(struct behavior_entry *entry)
+{
+    u64 avg = 0;
+    unsigned int i, count;
+
+    if (entry->sample_count < 2)
+        return;
+
+    /* 计算移动平均 */
+    count = min(entry->sample_count, BEHAVIOR_SAMPLES);
+    for (i = 0; i < count; i++)
+        avg += entry->samples[i].rss_bytes;
+    avg /= count;
+
+    if (!entry->baseline_valid) {
+        /* 首次建立基线 */
+        entry->rss_baseline = avg;
+        entry->baseline_valid = true;
+        return;
+    }
+
+    /* 如果当前 RSS 回落到基线附近 (波动 < 10%), 更新基线 */
+    if (avg > entry->rss_baseline) {
+        u64 delta = avg - entry->rss_baseline;
+        if (delta * 100 / max(entry->rss_baseline, (u64)1) < 10)
+            entry->rss_baseline = avg;
+    } else {
+        u64 delta = entry->rss_baseline - avg;
+        if (delta * 100 / max(entry->rss_baseline, (u64)1) < 10)
+            entry->rss_baseline = avg;
+        else
+            entry->rss_baseline = avg; /* 明显下降: 重置基线 */
+    }
 }
 
 /* ================================================================
@@ -512,7 +682,6 @@ static unsigned int calc_net_score(struct task_struct *task)
 {
     struct files_struct *files;
     struct fdtable *fdt;
-    unsigned int sockets = 0;
     unsigned int total_fds = 0;
 
     files = get_files_struct(task);
@@ -564,9 +733,9 @@ static unsigned int calc_criticality_score(struct task_struct *task)
 
     /* 检查 comm 名称 */
     const char *critical_processes[] = {
-        "systemd", "init", "bash", "sh", "sshd", "sshd",
+        "systemd", "init", "bash", "sh", "sshd",
         "cron", "rsyslogd", "dbus-daemon", "NetworkManager",
-        "login", "getty", "agettty", "auditd", "polkitd",
+        "login", "getty", "agetty", "auditd", "polkitd",
         "udevd", "systemd-journald", "systemd-logind",
         "systemd-udevd", "systemd-resolved", "systemd-timesyncd",
         NULL
@@ -593,28 +762,68 @@ static unsigned int calc_leak_score(const struct behavior_entry *be)
     return (unsigned int)detect_memory_leak(be);
 }
 
-/* 计算综合评分 */
+/* 计算综合评分
+ *
+ * 评分公式:
+ *   total = max(0, Σ(weight * score) / Σ(weight))
+ *   其中 CRITICALITY 维度为负权重 (保护重要进程)
+ *
+ * 校准步骤:
+ *   1. 各维度归一化到 0-100
+ *   2. 如果 CPU+MEM+IO > 100, 等比缩放使三者之和 <= 100
+ *   3. 应用权重, CRITICALITY 取负贡献
+ *   4. 最终结果钳位到 0-100
+ */
 static unsigned int calc_total_score(const struct ai_kill_score *score)
 {
     unsigned int total_weight = 0;
-    unsigned int weighted_sum = 0;
+    int weighted_sum = 0;  /* 有符号, 因为 CRITICALITY 贡献为负 */
+    unsigned int normalized[AI_KILL_DIM_COUNT];
 
+    /* Step 1: 各维度归一化到 0-100 */
+    for (int i = 0; i < AI_KILL_DIM_COUNT; i++)
+        normalized[i] = min(score->dims[i], 100u);
+
+    /* Step 2: 资源维度约束检查
+     * 如果 CPU + MEM + IO 之和 > 100, 等比缩放.
+     * 这防止一个进程在多个资源维度同时高分时被过度惩罚.
+     */
+    {
+        unsigned int sum = normalized[AI_KILL_DIM_CPU]
+                         + normalized[AI_KILL_DIM_MEM]
+                         + normalized[AI_KILL_DIM_IO];
+        if (sum > 100) {
+            unsigned int scale = 100;
+            normalized[AI_KILL_DIM_CPU] = normalized[AI_KILL_DIM_CPU] * scale / sum;
+            normalized[AI_KILL_DIM_MEM] = normalized[AI_KILL_DIM_MEM] * scale / sum;
+            normalized[AI_KILL_DIM_IO]  = normalized[AI_KILL_DIM_IO]  * scale / sum;
+        }
+    }
+
+    /* Step 3: 应用权重
+     * CRITICALITY 是负权重: 越重要的进程得分越高, 但应该降低杀戮分数.
+     * 因此 CRITICALITY 对加权和做负贡献.
+     */
     for (int i = 0; i < AI_KILL_DIM_COUNT; i++) {
-        weighted_sum += score->dims[i] * g_ai_kill.config.weights[i];
-        total_weight += g_ai_kill.config.weights[i];
+        unsigned int w = g_ai_kill.config.weights[i];
+        if (i == AI_KILL_DIM_CRITICALITY) {
+            /* 关键性越高, 杀戮分数越低 */
+            weighted_sum -= (int)(normalized[i] * w);
+        } else {
+            weighted_sum += (int)(normalized[i] * w);
+        }
+        total_weight += w;
     }
 
     if (total_weight == 0)
         return 0;
 
-    /* 关键性评分是负权重，所以分数可能低于 0 */
-    int total = (int)(weighted_sum / total_weight);
-    if (total < 0)
+    /* Step 4: 钳位到 0-100 */
+    if (weighted_sum < 0)
         return 0;
-    if (total > 100)
-        return 100;
 
-    return (unsigned int)total;
+    unsigned int total = (unsigned int)weighted_sum / total_weight;
+    return min(total, 100u);
 }
 
 /* 确定建议动作 */
@@ -633,16 +842,46 @@ static enum ai_kill_action determine_action(unsigned int score)
  * 执行器
  * ================================================================ */
 
-/* 检查速率限制 */
+/* 检查速率限制
+ *
+ * 双重限制:
+ *   1. 短间隔限制: 两次杀戮之间至少间隔 rate_limit_ms
+ *   2. 每分钟上限: 每分钟最多 kills_per_minute_max 次杀戮
+ *
+ * 返回 true 表示允许执行杀戮, false 表示需要节流.
+ */
 static bool rate_limit_check(void)
 {
     unsigned long now = jiffies;
-    unsigned long interval = msecs_to_jiffies(rate_limit_ms);
 
-    if (time_before(now, g_ai_kill.last_kill_jiffies + interval))
+    /* 重置每分钟计数器 (每分钟滚动一次) */
+    if (g_ai_kill.kills_minute_start == 0) {
+        g_ai_kill.kills_minute_start = now;
+    } else if (time_after_eq(now, g_ai_kill.kills_minute_start + HZ * 60)) {
+        /* 超过一分钟, 重置计数器 */
+        g_ai_kill.kills_this_minute = 0;
+        g_ai_kill.kills_minute_start = now;
+    }
+
+    /* 检查每分钟上限 */
+    if (g_ai_kill.kills_this_minute >= g_ai_kill.kills_per_minute_max) {
+        pr_debug("ai-kill: rate limit: kills/min exceeded (%u >= %u)\n",
+                 g_ai_kill.kills_this_minute,
+                 g_ai_kill.kills_per_minute_max);
         return false;
+    }
 
+    /* 检查短间隔限制 */
+    unsigned long interval = msecs_to_jiffies(rate_limit_ms);
+    if (time_before(now, g_ai_kill.last_kill_jiffies + interval)) {
+        pr_debug("ai-kill: rate limit: interval too short (%lu < %lu)\n",
+                 now - g_ai_kill.last_kill_jiffies, interval);
+        return false;
+    }
+
+    /* 通过限制, 记录本次杀戮 */
     g_ai_kill.last_kill_jiffies = now;
+    g_ai_kill.kills_this_minute++;
     return true;
 }
 
@@ -650,7 +889,7 @@ static bool rate_limit_check(void)
 static int ai_kill_do_kill(pid_t pid, enum ai_kill_action action)
 {
     struct task_struct *task;
-    int ret;
+    int ret = -EINVAL;
 
     if (pid <= 1)
         return -EPERM;
@@ -665,7 +904,7 @@ static int ai_kill_do_kill(pid_t pid, enum ai_kill_action action)
         return -EPERM;
     }
 
-    /* 白名单检查 */
+    /* 白名单检查 (安全网, 防止外部调用绕过白名单) */
     if (whitelist_check(task->comm)) {
         pr_info("ai-kill: whitelist protected '%s' (pid=%d)\n",
                 task->comm, pid);
@@ -693,11 +932,20 @@ static int ai_kill_do_kill(pid_t pid, enum ai_kill_action action)
         break;
 
     case AI_KILL_ACTION_GROUP: {
-        /* 杀死整个进程组 */
+        /* 杀死整个进程组: 使用 task_pgrp() 获取进程组 PID 结构 */
+        struct pid *pgrp = task_pgrp(task);
+        if (!pgrp) {
+            pr_warn("ai-kill: cannot get process group for %s (pid=%d)\n",
+                    task->comm, pid);
+            ret = -ESRCH;
+            break;
+        }
         pr_info("ai-kill: killing group of %s (pid=%d)\n", task->comm, pid);
-        kill_pid(task->tgid, SIGKILL, 1);
-        g_ai_kill.stats.actions_group++;
-        ret = 0;
+        ret = kill_pgrp(pgrp, SIGKILL, 1);
+        if (ret == 0)
+            g_ai_kill.stats.actions_group++;
+        break;
+    }
         break;
     }
 
@@ -807,7 +1055,7 @@ static void scan_processes(struct work_struct *work)
         if (task->exit_state)
             continue;
 
-        /* 保护 init */
+        /* 保护 init (pid <= 1) */
         if (protect_init && task_tgid_nr(task) <= 1)
             continue;
 
@@ -817,6 +1065,12 @@ static void scan_processes(struct work_struct *work)
         s->pid = task_tgid_nr(task);
         strscpy(s->comm, task->comm, COMM_LEN);
         s->oom_score_adj = task->signal->oom_score_adj;
+
+        /* 白名单检查: 在评分之前执行, 保护关键进程不被误判 */
+        if (whitelist_check(s->comm)) {
+            g_ai_kill.stats.whitelist_hits++;
+            continue;
+        }
 
         /* 获取行为记录 */
         spin_lock_irqsave(&g_ai_kill.behavior_lock, flags);
@@ -850,11 +1104,11 @@ static void scan_processes(struct work_struct *work)
     g_ai_kill.stats.current_victims = 0;
     g_ai_kill.stats.top_score = 0;
 
-    /* 按评分排序 (简单选择排序，取前 N 个) */
+    /* 按评分排序 (部分选择排序, 只取前 max_kills_per_scan 个候选) */
     if (score_count > 0 && g_ai_kill.config.enabled) {
-        int n = min(score_count, (int)max_kills_per_scan);
+        int candidates = min(score_count, (int)score_capacity);
 
-        for (int i = 0; i < n; i++) {
+        for (int i = 0; i < candidates; i++) {
             int best = i;
             for (int j = i + 1; j < score_count; j++) {
                 if (scores[j].total > scores[best].total)
@@ -877,17 +1131,19 @@ static void scan_processes(struct work_struct *work)
                 g_ai_kill.stats.scans_with_candidates++;
                 g_ai_kill.stats.current_victims++;
 
-                /* 速率限制 */
-                if (!rate_limit_check() && s->action >= AI_KILL_ACTION_KILL) {
-                    pr_debug("ai-kill: rate limited, skipping %s (pid=%d)\n",
-                             s->comm, s->pid);
-                    continue;
+                /* 速率限制: 每扫描周期最多 max_kills_per_scan 次杀戮 */
+                if (killed >= (int)g_ai_kill.config.max_kills_per_scan) {
+                    pr_debug("ai-kill: max kills per scan reached (%d)\n", killed);
+                    break;
                 }
 
-                /* 白名单检查 (再次确认) */
-                if (whitelist_check(s->comm)) {
-                    g_ai_kill.stats.whitelist_hits++;
-                    continue;
+                /* 速率限制: 检查间隔和每分钟上限 */
+                if (s->action >= AI_KILL_ACTION_KILL) {
+                    if (!rate_limit_check()) {
+                        pr_debug("ai-kill: rate limited, skipping %s (pid=%d)\n",
+                                 s->comm, s->pid);
+                        continue;
+                    }
                 }
 
                 int ret = ai_kill_do_kill(s->pid, s->action);
@@ -991,6 +1247,10 @@ pid_t ai_kill_suggest_victim(void)
         if (task->flags & PF_KTHREAD) continue;
         if (task->exit_state) continue;
         if (protect_init && task_tgid_nr(task) <= 1) continue;
+
+        /* 白名单检查: 保护关键进程 */
+        if (whitelist_check(task->comm))
+            continue;
 
         struct ai_kill_score s;
         memset(&s, 0, sizeof(s));
@@ -1201,6 +1461,7 @@ static ssize_t proc_config_write(struct file *file,
     char cmd[32];
     char arg1[64];
     unsigned int v1, v2, v3;
+    int ret = count;
 
     if (count >= sizeof(buf))
         return -EINVAL;
@@ -1211,8 +1472,10 @@ static ssize_t proc_config_write(struct file *file,
     if (count > 0 && buf[count - 1] == '\n')
         buf[count - 1] = '\0';
 
+    /* 所有写操作必须持有 config_lock, 与 proc_config_show 互斥 */
+    mutex_lock(&g_ai_kill.config_lock);
+
     if (strcmp(buf, "reset") == 0) {
-        mutex_lock(&g_ai_kill.config_lock);
         g_ai_kill.config.enabled = 1;
         g_ai_kill.config.scan_interval_ms = 3000;
         g_ai_kill.config.threshold_warn = 40;
@@ -1224,9 +1487,8 @@ static ssize_t proc_config_write(struct file *file,
         g_ai_kill.config.protect_kthreads = 1;
         memcpy((void *)g_ai_kill.config.weights, default_weights,
                sizeof(default_weights));
-        mutex_unlock(&g_ai_kill.config_lock);
         pr_info("ai-kill: config reset to defaults\n");
-        return count;
+        goto out;
     }
 
     if (sscanf(buf, "weight %31s %u", arg1, &v1) == 2) {
@@ -1243,44 +1505,68 @@ static ssize_t proc_config_write(struct file *file,
             g_ai_kill.config.weights[dim] = v1;
             pr_info("ai-kill: weight %s = %u\n", arg1, v1);
         }
-        return count;
+        goto out;
     }
 
     if (sscanf(buf, "threshold %u %u %u", &v1, &v2, &v3) == 3) {
+        /* 阈值必须合理: warn <= term <= kill, 且都在 0-100 范围 */
+        if (v1 > 100 || v2 > 100 || v3 > 100 || v1 > v2 || v2 > v3) {
+            pr_warn("ai-kill: invalid thresholds: %u/%u/%u\n", v1, v2, v3);
+            ret = -EINVAL;
+            goto out;
+        }
         g_ai_kill.config.threshold_warn = v1;
         g_ai_kill.config.threshold_term = v2;
         g_ai_kill.config.threshold_kill = v3;
-        return count;
+        goto out;
     }
 
     if (sscanf(buf, "interval %u", &v1) == 1) {
+        if (v1 < 100 || v1 > 60000) {
+            pr_warn("ai-kill: invalid interval: %u (100-60000 ms)\n", v1);
+            ret = -EINVAL;
+            goto out;
+        }
         g_ai_kill.config.scan_interval_ms = v1;
         mod_timer(&g_ai_kill.scan_timer,
                   jiffies + msecs_to_jiffies(v1));
-        return count;
+        goto out;
     }
 
     if (sscanf(buf, "max_kill %u", &v1) == 1) {
+        if (v1 > 100) {
+            ret = -EINVAL;
+            goto out;
+        }
         g_ai_kill.config.max_kills_per_scan = v1;
-        return count;
+        goto out;
     }
 
     if (sscanf(buf, "rate_limit %u", &v1) == 1) {
+        if (v1 < 100) {
+            ret = -EINVAL;
+            goto out;
+        }
         g_ai_kill.config.rate_limit_ms = v1;
-        return count;
+        goto out;
     }
 
     if (sscanf(buf, "enabled %u", &v1) == 1) {
-        g_ai_kill.config.enabled = v1;
-        return count;
+        g_ai_kill.config.enabled = !!v1;
+        goto out;
     }
 
     if (sscanf(buf, "whitelist %63s", arg1) == 1) {
         whitelist_init(arg1);
-        return count;
+        goto out;
     }
 
-    return -EINVAL;
+    /* 未知命令 */
+    ret = -EINVAL;
+
+out:
+    mutex_unlock(&g_ai_kill.config_lock);
+    return ret;
 }
 
 static const struct proc_ops proc_config_fops = {
@@ -1311,6 +1597,10 @@ static int proc_stats_show(struct seq_file *m, void *v)
     seq_printf(m, "%-30s = %llu ns\n", "last_scan_duration", s->last_scan_duration_ns);
     seq_printf(m, "%-30s = %u\n", "current_victims", s->current_victims);
     seq_printf(m, "%-30s = %u\n", "top_score", s->top_score);
+    seq_printf(m, "%-30s = %u / %u\n", "kills_this_minute / max",
+               g_ai_kill.kills_this_minute,
+               g_ai_kill.kills_per_minute_max);
+    seq_printf(m, "%-30s = %u\n", "whitelist_count", g_ai_kill.whitelist_count);
 
     return 0;
 }
@@ -1384,13 +1674,17 @@ static const struct proc_ops proc_history_fops = {
 
 static int proc_behavior_show(struct seq_file *m, void *v)
 {
+    struct behavior_entry *table;
     unsigned long flags;
 
+    rcu_read_lock();
     spin_lock_irqsave(&g_ai_kill.behavior_lock, flags);
 
-    if (!g_ai_kill.behavior_table) {
+    table = rcu_dereference(g_ai_kill.behavior_table);
+    if (!table) {
         seq_puts(m, "Behavior table not initialized.\n");
         spin_unlock_irqrestore(&g_ai_kill.behavior_lock, flags);
+        rcu_read_unlock();
         return 0;
     }
 
@@ -1399,7 +1693,7 @@ static int proc_behavior_show(struct seq_file *m, void *v)
 
     int active = 0;
     for (int i = 0; i < BEHAVIOR_TABLE_SIZE; i++) {
-        struct behavior_entry *be = &g_ai_kill.behavior_table[i];
+        struct behavior_entry *be = &table[i];
         if (be->pid == 0) continue;
         active++;
 
@@ -1420,6 +1714,7 @@ static int proc_behavior_show(struct seq_file *m, void *v)
                active, BEHAVIOR_TABLE_SIZE);
 
     spin_unlock_irqrestore(&g_ai_kill.behavior_lock, flags);
+    rcu_read_unlock();
     return 0;
 }
 
@@ -1465,7 +1760,12 @@ static int __init ai_kill_init(void)
 
     /* 初始化统计 */
     memset(&g_ai_kill.stats, 0, sizeof(g_ai_kill.stats));
-    g_ai_kill.stats_initialized = true;
+
+    /* 初始化速率限制 */
+    g_ai_kill.kills_this_minute = 0;
+    g_ai_kill.kills_per_minute_max = 10;  /* 每分钟最多 10 次杀戮 */
+    g_ai_kill.kills_minute_start = 0;
+    g_ai_kill.last_kill_jiffies = 0;
 
     /* 初始化杀戮历史 */
     history_init();

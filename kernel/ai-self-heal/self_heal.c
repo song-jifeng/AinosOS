@@ -313,9 +313,11 @@ static void heal_ring_push(struct heal_ring_buffer *ring,
 
     spin_lock_irqsave(&ring->lock, flags);
 
-    rec->seq = (u32)atomic64_inc_return(&ring->seq_counter);
-
+    /* Fix: copy the record into the buffer first, then set seq on the
+     * buffer copy. Do NOT modify the const input parameter (rec->seq = ...).
+     * This also ensures the caller's record is not mutated as a side effect. */
     ring->entries[ring->head] = *rec;
+    ring->entries[ring->head].seq = (u32)atomic64_inc_return(&ring->seq_counter);
 
     ring->head = (ring->head + 1) & (ring->max_entries - 1);
 
@@ -499,15 +501,49 @@ static unsigned int heal_calculate_health_score(void)
 
 static enum heal_health_status heal_calculate_health_status(unsigned int score)
 {
+    /* Fix: remove dead code -- the last two branches were identical,
+     * making the < 30 case unreachable.  Merge into a single return. */
     if (score >= 80) return HEAL_HEALTH_OK;
     if (score >= 50) return HEAL_HEALTH_WARNING;
-    if (score >= 30) return HEAL_HEALTH_CRITICAL;
     return HEAL_HEALTH_CRITICAL;
 }
 
 /* ================================================================
  * 恢复执行器
  * ================================================================ */
+
+/*
+ * heal_msleep - 上下文感知的延迟函数。
+ * @msecs: 延迟毫秒数。
+ *
+ * Fix: msleep() 在原子上下文中会触发 BUG 或导致内核崩溃。
+ * 此函数根据上下文自动选择正确的延迟机制:
+ *   - 进程上下文: 使用 msleep() (睡眠，让出 CPU)
+ *   - 软/硬中断上下文: 使用 mdelay() (忙等待)
+ *   - NMI/Panic 上下文: 跳过延迟 (无法安全等待)
+ *
+ * 导出的 API (self_heal_report_event 等) 可能被任何上下文调用，
+ * 因此所有内核模块中的 msleep 调用都应通过此函数替代。
+ */
+static inline void heal_msleep(unsigned int msecs)
+{
+    if (in_task()) {
+        /* 进程上下文: 可以安全睡眠 */
+        msleep(msecs);
+    } else if (!in_nmi() && !in_panic()) {
+        /* 原子上下文 (软/硬中断): 忙等待。
+         * 注意: 仅用于短延迟，长延迟 (< 200ms) 会消耗 CPU。 */
+        mdelay(msecs);
+    }
+    /* NMI/Panic: 不能执行任何延迟操作，静默跳过 */
+}
+
+/* 在 kill_task 中，SIGTERM 后的等待在原子上下文中应跳过，
+ * 直接使用 SIGKILL 替代。 */
+static inline bool heal_can_sleep(void)
+{
+    return in_task();
+}
 
 /*
  * 安全地杀死进程。
@@ -526,19 +562,30 @@ static int heal_kill_task(struct task_struct *task, bool force)
     if (!task)
         return -EINVAL;
 
+    /* Fix: get our own reference to task_struct so the function is
+     * self-contained and safe even if the caller does not hold a
+     * reference.  Without this, a concurrent release could free the
+     * task while we are inside msleep() or send_sig(). */
+    get_task_struct(task);
+
     pid = task_tgid_nr(task);
-    if (pid <= 0)
+    if (pid <= 0) {
+        put_task_struct(task);
         return -ESRCH;
+    }
 
     /* 跳过内核线程和 init */
     if (pid == 1 || (task->flags & PF_KTHREAD)) {
         pr_warn("self-heal: refusing to kill kernel thread or init (pid=%d)\n", pid);
+        put_task_struct(task);
         return -EPERM;
     }
 
     pid_struct = get_task_pid(task, PIDTYPE_PID);
-    if (!pid_struct)
+    if (!pid_struct) {
+        put_task_struct(task);
         return -ESRCH;
+    }
 
     if (!force) {
         /* 先 SIGTERM */
@@ -546,14 +593,25 @@ static int heal_kill_task(struct task_struct *task, bool force)
         ret = send_sig(SIGTERM, task, 0);
         if (ret < 0) {
             put_pid(pid_struct);
+            put_task_struct(task);
             return ret;
         }
-        msleep(1000);
+        /* Fix: Use heal_msleep() instead of msleep().
+         * In atomic context, we cannot sleep, so skip the graceful
+         * wait and the caller will fall through to SIGKILL below. */
+        if (heal_can_sleep()) {
+            heal_msleep(1000);
+        } else {
+            pr_debug("self-heal: atomic context, skipping SIGTERM wait, "
+                     "proceeding to SIGKILL\n");
+            force = true;  /* Skip the exit_state check, go to SIGKILL */
+        }
     }
 
     /* 检查是否还在运行 */
     if (task->state == TASK_DEAD || task->exit_state == EXIT_DEAD) {
         put_pid(pid_struct);
+        put_task_struct(task);
         return 0;  /* 已经优雅退出 */
     }
 
@@ -567,6 +625,7 @@ static int heal_kill_task(struct task_struct *task, bool force)
     }
 
     put_pid(pid_struct);
+    put_task_struct(task);
     return ret;
 }
 
@@ -589,8 +648,8 @@ static struct task_struct *heal_find_biggest_memory_consumer(void)
         if (task_tgid_nr(p) <= 1)
             continue;
 
-        /* 获取 RSS (近似) */
-        rss = get_mm_rss(p->mm);
+        /* 获取 RSS (近似).  Fix: p->mm can be NULL for exiting tasks */
+        rss = p->mm ? get_mm_rss(p->mm) : 0;
         if (rss > max_rss) {
             max_rss = rss;
             biggest = p;
@@ -646,8 +705,9 @@ static int heal_reclaim_memory(void)
     /* 唤醒 kswapd 进行回收 */
     wakeup_kswapd(0, GFP_KERNEL, 0);
 
-    /* 等待回收进行 (仅在非原子上下文) */
-    msleep(500);
+    /* Fix: Use heal_msleep() instead of msleep() for atomic-context safety.
+     * 等待回收进行 (仅在非原子上下文) */
+    heal_msleep(500);
 
     unsigned long avail_after = si_mem_available(NULL);
 
@@ -780,19 +840,90 @@ static int heal_recover_high_load(enum heal_level level)
 
 /*
  * 执行僵尸进程恢复。
- * Level 1: 尝试收割 (内核自动处理，通常不需要操作)
+ * Level 1: 尝试收割僵尸进程
+ *
+ * Fix: Actually handle zombie processes instead of just logging.
+ * Zombies are already dead -- they cannot be killed directly. They must
+ * be reaped by their parent calling wait()/waitpid(). We send SIGKILL
+ * to the parent to force it to wake up and call wait(), which triggers
+ * the reaping.  Init (pid=1) is skipped because it is handled by the
+ * kernel's wait-family reaper, and sending SIGKILL to init is unsafe.
  */
 static int heal_recover_zombie(enum heal_level level)
 {
+    int reaped = 0;
+
     switch (level) {
     case HEAL_LEVEL_LOG:
-    case HEAL_LEVEL_SOFT:
-        /* 内核的 wait 系统调用会处理僵尸进程。
-         * 如果僵尸进程过多，通常是 init 进程的问题。
-         * 这里我们只记录和报告。 */
-        pr_info("self-heal: %u zombies detected, waiting for reaping\n",
-                zombie_crit_count);
         return 0;
+
+    case HEAL_LEVEL_SOFT: {
+        /* Use a fixed-size stack array to collect zombie/parent PID pairs
+         * while under RCU, then process outside the lock.  We cannot call
+         * send_sig() under rcu_read_lock() because it may allocate. */
+        struct zombie_info {
+            pid_t zombie_pid;
+            pid_t parent_pid;
+            char  zombie_comm[TASK_COMM_LEN];
+            char  parent_comm[TASK_COMM_LEN];
+        } zombies[64];
+        int n_zombies = 0;
+        struct task_struct *p;
+
+        rcu_read_lock();
+        for_each_process(p) {
+            if (p->exit_state == EXIT_ZOMBIE && n_zombies < 64) {
+                struct task_struct *parent = rcu_dereference(p->real_parent);
+                if (parent) {
+                    zombies[n_zombies].zombie_pid = task_tgid_nr(p);
+                    zombies[n_zombies].parent_pid = task_tgid_nr(parent);
+                    strscpy(zombies[n_zombies].zombie_comm, p->comm,
+                            TASK_COMM_LEN);
+                    strscpy(zombies[n_zombies].parent_comm, parent->comm,
+                            TASK_COMM_LEN);
+                    n_zombies++;
+                }
+            }
+        }
+        rcu_read_unlock();
+
+        /* Now process outside RCU lock -- send SIGKILL to each parent. */
+        for (int i = 0; i < n_zombies; i++) {
+            /* Skip init (pid 1) -- the kernel reaps its children */
+            if (zombies[i].parent_pid <= 1)
+                continue;
+
+            /* Find the parent task with a proper reference */
+            struct task_struct *parent;
+            rcu_read_lock();
+            parent = find_task_by_vpid(zombies[i].parent_pid);
+            if (parent)
+                get_task_struct(parent);
+            rcu_read_unlock();
+
+            if (!parent) {
+                pr_debug("self-heal: zombie parent pid=%d already gone\n",
+                         zombies[i].parent_pid);
+                continue;
+            }
+
+            /* Skip kernel threads */
+            if (parent->flags & PF_KTHREAD) {
+                put_task_struct(parent);
+                continue;
+            }
+
+            pr_info("self-heal: sending SIGKILL to zombie parent pid=%d (%s) "
+                    "to reap child pid=%d (%s)\n",
+                    zombies[i].parent_pid, zombies[i].parent_comm,
+                    zombies[i].zombie_pid, zombies[i].zombie_comm);
+            send_sig(SIGKILL, parent, 0);
+            put_task_struct(parent);
+            reaped++;
+        }
+
+        return reaped > 0 ? 0 : -ESRCH;
+    }
 
     default:
         return -ENOSYS;
@@ -842,11 +973,13 @@ static int heal_execute_recovery(enum heal_event_type type, enum heal_level leve
     case HEAL_EVENT_SOFT_LOCKUP:
     case HEAL_EVENT_DRIVER:
     case HEAL_EVENT_FS:
-        /* 需要驱动重载或子系统重启 */
-        if (level >= HEAL_LEVEL_RESTART)
-            ret = 0;  /* 记录意图，实际由用户空间执行 */
-        else
-            ret = -ENOSYS;
+        /* 需要驱动重载或子系统重启。
+         * Fix: Do NOT silently return 0 at RESTART level -- that makes
+         * heal_process_event() think recovery succeeded when nothing was
+         * actually done.  Return -ENOSYS so the escalation loop continues
+         * to KEXEC or PANIC.  Actual driver reload must be performed by
+         * userspace (rmmod + insmod). */
+        ret = -ENOSYS;
         break;
 
     case HEAL_EVENT_MCE:
@@ -858,11 +991,10 @@ static int heal_execute_recovery(enum heal_event_type type, enum heal_level leve
         break;
 
     case HEAL_EVENT_PANIC:
-        /* 从 panic 恢复 */
-        if (level >= HEAL_LEVEL_RESTART)
-            ret = 0;  /* 阻止 panic 继续 */
-        else
-            ret = -ENOSYS;
+        /* 从 panic 恢复。
+         * Fix: return -ENOSYS so the escalation loop can escalate to
+         * KEXEC.  Merely returning 0 does nothing to prevent the panic. */
+        ret = -ENOSYS;
         break;
 
     default:
@@ -962,7 +1094,9 @@ static int heal_process_event(enum heal_event_type type,
             current_level++;
             escalated = true;
             heal_stats_inc(&g_self_heal.stats.escalation_count);
-            msleep(100);  /* 短暂延迟再尝试更高级别 */
+            /* Fix: Use heal_msleep() instead of msleep() for
+             * atomic-context safety. 短暂延迟再尝试更高级别 */
+            heal_msleep(100);
         } else {
             break;
         }
@@ -1079,18 +1213,26 @@ static void heal_monitor_work(struct work_struct *work)
     g_self_heal.health_score = heal_calculate_health_score();
     g_self_heal.health_status = heal_calculate_health_status(g_self_heal.health_score);
     g_self_heal.last_monitor_jiffies = jiffies;
+
+    /* Fix: Re-arm the timer HERE, not in the timer callback.
+     * This ensures the timer only fires again AFTER the work completes,
+     * preventing work items from piling up if the work takes longer than
+     * the timer interval.  If the timer were re-armed in the callback,
+     * queue_work would queue another instance while the current one is
+     * still running, causing back-to-back executions with no gap. */
+    if (g_self_heal.initialized && enable_preventive)
+        mod_timer(&g_self_heal.monitor_timer,
+                  jiffies + msecs_to_jiffies(monitor_interval_sec * 1000));
 }
 
 static void heal_monitor_timer_cb(struct timer_list *t)
 {
-    /* 定时器在原子上下文，将实际工作调度到工作队列 */
+    /* 定时器在原子上下文，将实际工作调度到工作队列。
+     * Fix: Do NOT re-arm the timer here -- the work function re-arms
+     * after completion.  This prevents work pileup when the monitoring
+     * work takes longer than the timer interval. */
     if (g_self_heal.initialized && g_self_heal.monitor_wq)
         queue_work(g_self_heal.monitor_wq, &g_self_heal.monitor_work);
-
-    /* 重新设置定时器 */
-    if (g_self_heal.initialized)
-        mod_timer(&g_self_heal.monitor_timer,
-                  jiffies + msecs_to_jiffies(monitor_interval_sec * 1000));
 }
 
 /* ================================================================
@@ -1386,6 +1528,10 @@ static ssize_t heal_proc_trigger_write(struct file *file,
     char reason[128] = "";
     int pid = 0;
     int parsed;
+    int i;  /* Fix: declare loop variable at function scope so that
+             * both for-loops below can use it.  Previously the first
+             * loop declared 'int i' inside the for() which is C99-scoped
+             * and not visible to the second loop at line 1518. */
 
     if (count >= sizeof(buf))
         return -EINVAL;
@@ -1411,7 +1557,7 @@ static ssize_t heal_proc_trigger_write(struct file *file,
 
     /* 查找事件类型 */
     int type = -1;
-    for (int i = 0; i < HEAL_EVENT_MAX; i++) {
+    for (i = 0; i < HEAL_EVENT_MAX; i++) {
         if (strcmp(cmd, g_self_heal.configs[i].name) == 0) {
             type = i;
             break;
@@ -1421,7 +1567,7 @@ static ssize_t heal_proc_trigger_write(struct file *file,
         /* 尝试直接匹配 trigger 命令 */
         if (strcmp(cmd, "trigger") == 0 && parsed >= 2) {
             /* trigger <event> 格式 */
-            for (int i = 0; i < HEAL_EVENT_MAX; i++) {
+            for (i = 0; i < HEAL_EVENT_MAX; i++) {
                 if (strcmp(level_str, g_self_heal.configs[i].name) == 0) {
                     type = i;
                     /* 调整解析 */
@@ -1723,15 +1869,27 @@ static void __exit self_heal_exit(void)
 
     g_self_heal.initialized = false;
 
-    /* 停止监控定时器 */
+    /* Fix: Proper shutdown sequence for timer + workqueue.
+     *
+     * The work function re-arms the timer after completion.  The
+     * shutdown must account for this:
+     *   1. Stop the timer (no new work will be queued)
+     *   2. Flush any running work (may re-arm the timer)
+     *   3. Stop the timer again (in case work re-armed it)
+     *   4. Destroy the workqueue
+     */
     if (enable_preventive)
         del_timer_sync(&g_self_heal.monitor_timer);
 
-    /* 刷新工作队列 */
     if (g_self_heal.monitor_wq) {
         flush_work(&g_self_heal.monitor_work);
         destroy_workqueue(g_self_heal.monitor_wq);
+        g_self_heal.monitor_wq = NULL;
     }
+
+    /* Second delete in case work re-armed the timer before flush */
+    if (enable_preventive)
+        del_timer_sync(&g_self_heal.monitor_timer);
 
     /* 注销 panic 通知器 */
     atomic_notifier_chain_unregister(&panic_notifier_list,

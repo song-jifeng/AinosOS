@@ -189,6 +189,19 @@ static int check_patch_safety(struct hotpatch_entry *entry)
         return -EINVAL;
     }
 
+    /* 检查是否在修补自身 (hotpatch 模块内的函数) */
+    {
+        struct module *self = THIS_MODULE;
+        unsigned long patch_addr_val = (unsigned long)entry->patch_addr;
+        if (patch_addr_val >= (unsigned long)self->module_core &&
+            patch_addr_val < (unsigned long)self->module_core + self->core_size) {
+            pr_warn("hotpatch: refusing to self-patch (%s is in hotpatch module)\n",
+                    entry->target_func);
+            entry->safety_ok = 0;
+            return -EPERM;
+        }
+    }
+
     /* 检查目标函数前 5 字节是否都是可执行指令 */
     /* 简化: 不做完整反汇编, 只检查不是内核文本段边界 */
     unsigned long addr = (unsigned long)entry->target_addr;
@@ -220,13 +233,23 @@ static int do_patch_cb(void *data)
     struct patch_work *pw = data;
     u8 jmp_code[JMP_INSN_SIZE];
     s32 offset;
-    int i;
 
     if (pw->apply) {
         /* 构建 JMP rel32 指令 */
         jmp_code[0] = 0xE9;  /* JMP rel32 opcode */
         offset = (s32)((unsigned long)pw->patch_addr -
                        ((unsigned long)pw->target_addr + 5));
+
+        /* 安全检查: offset 必须能放入 32 位有符号整数 */
+        s64 offset_64 = (s64)((unsigned long)pw->patch_addr -
+                              ((unsigned long)pw->target_addr + 5));
+        if (offset_64 > (s64)0x7FFFFFFF || offset_64 < (s64)(-0x7FFFFFFF - 1)) {
+            pr_err("hotpatch: JMP offset %lld out of range for 32-bit signed\n",
+                   (long long)offset_64);
+            pw->result = -ERANGE;
+            return 0;
+        }
+
         memcpy(&jmp_code[1], &offset, 4);
 
         /* 备份原始指令 */
@@ -235,6 +258,32 @@ static int do_patch_cb(void *data)
         /* 写入 JMP 指令 */
         memcpy(pw->target_addr, jmp_code, JMP_INSN_SIZE);
     } else {
+        /* 回滚前验证: 检查当前指令是否仍是我们的 JMP */
+        u8 current_bytes[JMP_INSN_SIZE];
+        memcpy(current_bytes, pw->target_addr, JMP_INSN_SIZE);
+
+        /* 构建期望的 JMP 指令来比对 */
+        u8 expected_jmp[JMP_INSN_SIZE];
+        expected_jmp[0] = 0xE9;
+        offset = (s32)((unsigned long)pw->patch_addr -
+                       ((unsigned long)pw->target_addr + 5));
+        memcpy(&expected_jmp[1], &offset, 4);
+
+        /* 如果当前字节与期望的 JMP 不匹配，可能是别人修改了，拒绝回滚 */
+        if (memcmp(current_bytes, expected_jmp, JMP_INSN_SIZE) != 0) {
+            /* 但如果是原始指令 (已被回滚过)，也接受 */
+            if (memcmp(current_bytes, pw->orig_bytes, JMP_INSN_SIZE) != 0) {
+                pr_err("hotpatch: rollback failed: bytes at target don't match "
+                       "expected JMP or original instructions. Someone else "
+                       "may have patched this function.\n");
+                pw->result = -EBUSY;
+                return 0;
+            }
+            /* 已经是原始指令，回滚无需操作 */
+            pw->result = 0;
+            return 0;
+        }
+
         /* 恢复原始指令 */
         memcpy(pw->target_addr, pw->orig_bytes, JMP_INSN_SIZE);
     }
