@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ainos OS 管理面板</title>
+<style>
+  :root { --bg: #0f172a; --card: #1e293b; --primary: #3b82f6; --text: #e2e8f0; --muted: #94a3b8; --green: #22c55e; --red: #ef4444; --yellow: #eab308; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; }
+  nav { width: 220px; background: var(--card); padding: 1.5rem; border-right: 1px solid #334155; }
+  nav h1 { font-size: 1.2rem; margin-bottom: 2rem; color: var(--primary); }
+  nav a { display: block; padding: 0.6rem 1rem; color: var(--muted); text-decoration: none; border-radius: 8px; margin-bottom: 0.3rem; transition: all 0.2s; }
+  nav a:hover, nav a.active { background: var(--primary); color: white; }
+  main { flex: 1; padding: 2rem; overflow-y: auto; max-height: 100vh; }
+  .page { display: none; }
+  .page.active { display: block; }
+  h2 { margin-bottom: 1.5rem; font-size: 1.5rem; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+  .card { background: var(--card); padding: 1.2rem; border-radius: 12px; }
+  .card .label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .card .value { font-size: 1.8rem; font-weight: 700; margin-top: 0.3rem; }
+  .card .sub { font-size: 0.85rem; color: var(--muted); margin-top: 0.3rem; }
+  .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 0.4rem; }
+  .status-dot.green { background: var(--green); }
+  .status-dot.red { background: var(--red); }
+  .status-dot.yellow { background: var(--yellow); }
+  textarea, input, select { width: 100%; padding: 0.7rem; border: 1px solid #334155; border-radius: 8px; background: #0f172a; color: var(--text); font-size: 0.95rem; margin-bottom: 0.8rem; }
+  textarea { min-height: 100px; resize: vertical; font-family: inherit; }
+  button { padding: 0.7rem 1.5rem; background: var(--primary); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 0.95rem; transition: background 0.2s; }
+  button:hover { background: #2563eb; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.danger { background: var(--red); }
+  button.danger:hover { background: #dc2626; }
+  pre { background: #0f172a; padding: 1rem; border-radius: 8px; overflow-x: auto; font-size: 0.85rem; margin-top: 1rem; max-height: 400px; overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+  th, td { text-align: left; padding: 0.7rem; border-bottom: 1px solid #334155; }
+  th { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
+  .loading { opacity: 0.5; pointer-events: none; }
+  .toast { position: fixed; bottom: 2rem; right: 2rem; background: var(--card); padding: 1rem 1.5rem; border-radius: 8px; border-left: 4px solid var(--primary); box-shadow: 0 4px 20px rgba(0,0,0,0.3); display: none; }
+  @media (max-width: 768px) { nav { width: 60px; } nav h1, nav a span { display: none; } nav a { text-align: center; padding: 0.6rem; } main { padding: 1rem; } }
+</style>
+</head>
+<body>
+
+<nav>
+  <h1>⊞ Ainos</h1>
+  <a href="#" onclick="switchPage('dashboard')" class="active" data-page="dashboard"><span>📊 仪表盘</span></a>
+  <a href="#" onclick="switchPage('inference')" data-page="inference"><span>🧠 推理</span></a>
+  <a href="#" onclick="switchPage('models')" data-page="models"><span>📦 模型</span></a>
+  <a href="#" onclick="switchPage('context')" data-page="context"><span>💾 上下文</span></a>
+  <a href="#" onclick="switchPage('thermal')" data-page="thermal"><span>🌡️ 温控</span></a>
+</nav>
+
+<main>
+  <!-- 仪表盘 -->
+  <div id="page-dashboard" class="page active">
+    <h2>📊 系统状态</h2>
+    <div class="cards" id="status-cards">
+      <div class="card"><div class="label">状态</div><div class="value" id="s-status">检测中...</div></div>
+      <div class="card"><div class="label">运行时间</div><div class="value" id="s-uptime">-</div></div>
+      <div class="card"><div class="label">总请求数</div><div class="value" id="s-requests">-</div></div>
+      <div class="card"><div class="label">已加载模型</div><div class="value" id="s-models">-</div></div>
+    </div>
+    <div class="card" style="margin-top: 1rem;">
+      <div class="label">响应</div>
+      <pre id="dashboard-raw">{}</pre>
+    </div>
+  </div>
+
+  <!-- 推理 -->
+  <div id="page-inference" class="page">
+    <h2>🧠 推理测试</h2>
+    <div class="card">
+      <label>模型</label>
+      <select id="infer-model"><option value="default">默认</option></select>
+      <label>Prompt</label>
+      <textarea id="infer-prompt" placeholder="输入推理提示...">介绍 Ainos OS</textarea>
+      <button onclick="doInference()">🚀 发送推理请求</button>
+      <pre id="infer-result">点击上方按钮发送推理请求</pre>
+    </div>
+  </div>
+
+  <!-- 模型 -->
+  <div id="page-models" class="page">
+    <h2>📦 模型管理</h2>
+    <button onclick="loadModels()">🔄 刷新模型列表</button>
+    <div id="models-table-wrapper"><pre id="models-result">点击刷新加载模型列表</pre></div>
+  </div>
+
+  <!-- 上下文 -->
+  <div id="page-context" class="page">
+    <h2>💾 上下文管理</h2>
+    <div class="card" style="margin-bottom:1rem">
+      <h3 style="margin-bottom:0.8rem">存储上下文</h3>
+      <input id="ctx-key" placeholder="Key">
+      <textarea id="ctx-value" placeholder="Value" style="min-height:60px"></textarea>
+      <button onclick="storeContext()">💾 存储</button>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:0.8rem">检索上下文</h3>
+      <input id="ctx-retrieve-key" placeholder="Key">
+      <button onclick="retrieveContext()">🔍 检索</button>
+      <pre id="ctx-result"></pre>
+    </div>
+  </div>
+
+  <!-- 温控 -->
+  <div id="page-thermal" class="page">
+    <h2>🌡️ 温控策略</h2>
+    <div class="card">
+      <p>温控信息通过状态接口间接获取。</p>
+      <button onclick="refreshDashboard()">🔄 刷新</button>
+      <pre id="thermal-result">等待刷新...</pre>
+    </div>
+  </div>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const API = "";
+
+function $(id) { return document.getElementById(id); }
+
+function switchPage(name) {
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("active"));
+  document.querySelectorAll("nav a").forEach(a => a.classList.remove("active"));
+  $(`page-${name}`).classList.add("active");
+  document.querySelector(`nav a[data-page="${name}"]`).classList.add("active");
+}
+
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  setTimeout(() => t.style.display = "none", 3000);
+}
+
+async function api(path, method = "GET", body = null) {
+  const opts = { method, headers: { "Content-Type": "application/json" } };
+  if (body) opts.body = JSON.stringify(body);
+  try {
+    const r = await fetch(`${API}${path}`, opts);
+    return await r.json();
+  } catch (e) {
+    return { type: "Error", error: e.message };
+  }
+}
+
+// 仪表盘
+async function refreshDashboard() {
+  const status = await api("/api/status");
+  $("dashboard-raw").textContent = JSON.stringify(status, null, 2);
+  $("s-status").innerHTML = status.type === "StatusResponse"
+    ? '<span class="status-dot green"></span>运行中'
+    : '<span class="status-dot red"></span>离线';
+  if (status.type === "StatusResponse") {
+    const uptime = status.uptime || 0;
+    const h = Math.floor(uptime / 3600);
+    const m = Math.floor((uptime % 3600) / 60);
+    const s = uptime % 60;
+    $("s-uptime").textContent = `${h}h ${m}m ${s}s`;
+    $("s-requests").textContent = (status.total_requests || 0).toLocaleString();
+    $("s-models").textContent = status.models_loaded || 0;
+  }
+}
+
+// 推理
+async function doInference() {
+  const btn = document.querySelector("#page-inference button");
+  btn.disabled = true;
+  btn.textContent = "推理中...";
+  const prompt = $("infer-prompt").value;
+  const model = $("infer-model").value;
+  $("infer-result").textContent = "等待响应...";
+  const resp = await api("/api/inference", "POST", { prompt, model });
+  $("infer-result").textContent = JSON.stringify(resp, null, 2);
+  btn.disabled = false;
+  btn.textContent = "🚀 发送推理请求";
+}
+
+// 模型
+async function loadModels() {
+  $("models-result").textContent = "加载中...";
+  const resp = await api("/api/models");
+  $("models-result").textContent = JSON.stringify(resp, null, 2);
+}
+
+// 上下文
+async function storeContext() {
+  const key = $("ctx-key").value;
+  const value = $("ctx-value").value;
+  if (!key) { toast("请输入 Key"); return; }
+  const resp = await api("/api/context", "POST", { key, value });
+  toast("已存储: " + (resp.output || "OK"));
+  $("ctx-key").value = "";
+  $("ctx-value").value = "";
+}
+
+async function retrieveContext() {
+  const key = $("ctx-retrieve-key").value;
+  if (!key) { toast("请输入 Key"); return; }
+  const resp = await api(`/api/context?key=${encodeURIComponent(key)}`);
+  $("ctx-result").textContent = JSON.stringify(resp, null, 2);
+}
+
+// 自动刷新
+setInterval(refreshDashboard, 10000);
+refreshDashboard();
+loadModels();
+</script>
+</body>
+</html>

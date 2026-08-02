@@ -1,0 +1,37 @@
+version: "3.8"
+
+services:
+  ai-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ainos-daemon
+    ports:
+      - "9500:9500"
+    volumes:
+      - ./models:/var/lib/ainos/models
+      - ./data:/var/lib/ainos/data
+      - ./logs:/var/lib/ainos/logs
+      - ./configs/ai-daemon.toml:/etc/ainos/ai-daemon.toml:ro
+    environment:
+      - RUST_LOG=info,ainos=debug
+      - AINOS_HOME=/var/lib/ainos
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo '{\"type\":\"Status\"}' | timeout 3 nc 127.0.0.1 9500 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Web 管理面板（可选，使用 nginx 托管静态页面）
+  web-panel:
+    image: nginx:alpine
+    container_name: ainos-web
+    ports:
+      - "9501:80"
+    volumes:
+      - ./system-services/web-panel:/usr/share/nginx/html:ro
+    profiles:
+      - web
+    restart: unless-stopped

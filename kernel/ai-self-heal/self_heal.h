@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #ifndef AINOS_SELF_HEAL_H
 #define AINOS_SELF_HEAL_H
 

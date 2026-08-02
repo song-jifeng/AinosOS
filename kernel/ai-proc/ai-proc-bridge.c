@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 // Ainos OS - ai-proc-bridge: 内核 ↔ ai-daemon 桥接器
 // 运行在用户态，通过 /dev/ainos-proc 与内核通信
 // 通过 TCP 与 ai-daemon (127.0.0.1:9500) 通信

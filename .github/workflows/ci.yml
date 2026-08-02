@@ -1,0 +1,149 @@
+# Ainos OS CI 构建验证流水线
+#
+# 触发条件:
+#   - push 到 main 分支
+#   - 对 main 的 PR
+#   - 手动触发 (workflow_dispatch)
+#
+# 流水线:
+#   1. 代码质量检查 (clippy, cppcheck)
+#   2. Rust 编译 (ai-daemon, ai-tools)
+#   3. C/C++ 编译 (ai-runtime)
+#   4. 单元测试
+#   5. 集成测试
+
+name: Ainos OS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ============================================
+  # Job 1: Rust 代码质量与编译
+  # ============================================
+  rust-check:
+    name: Rust 检查 (ai-daemon + ai-tools)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: 代码格式化检查 (ai-daemon)
+        working-directory: system-services/ai-daemon
+        run: cargo fmt --check
+
+      - name: Clippy 静态分析 (ai-daemon)
+        working-directory: system-services/ai-daemon
+        run: cargo clippy -- -D warnings
+
+      - name: 编译 (ai-daemon)
+        working-directory: system-services/ai-daemon
+        run: cargo build --release
+
+      - name: 编译 (ai-git)
+        working-directory: ai-tools/ai-git
+        run: cargo build --release
+
+      - name: 运行测试 (ai-daemon)
+        working-directory: system-services/ai-daemon
+        run: cargo test
+
+  # ============================================
+  # Job 2: C/C++ 编译与测试
+  # ============================================
+  cpp-check:
+    name: C++ 编译 (ai-runtime)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装编译工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ cppcheck
+
+      - name: 配置 CMake
+        working-directory: ai-runtime
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DAINOS_BUILD_TESTS=ON
+
+      - name: 编译
+        working-directory: ai-runtime
+        run: cmake --build build --parallel
+
+      - name: 运行测试
+        working-directory: ai-runtime
+        run: ctest --test-dir build --output-on-failure
+
+  # ============================================
+  # Job 3: C SDK 编译
+  # ============================================
+  sdk-check:
+    name: C SDK 编译
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装编译工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc cmake
+
+      - name: 编译 SDK
+        working-directory: userland/sdk
+        run: gcc -c -o libainos.o libainos.c -Wall -Wextra
+
+  # ============================================
+  # Job 4: Python 验收测试
+  # ============================================
+  python-test:
+    name: Python 验收测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 检查语法
+        run: |
+          python -m py_compile scripts/verification_test.py
+
+  # ============================================
+  # Job 5: 文档与许可证检查
+  # ============================================
+  docs-check:
+    name: 文档检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查 README 存在
+        run: |
+          test -f README.md && echo "README.md: OK"
+          test -f LICENSE && echo "LICENSE: OK"
+
+      - name: 检查 ADR 目录
+        run: |
+          test -d docs/adr && echo "ADR directory: OK"
+
+      - name: 检查许可证头（内核模块必须是 GPL）
+        run: |
+          for f in kernel/*.c kernel/**/*.h; do
+            if [ -f "$f" ]; then
+              head -1 "$f" | grep -q "SPDX-License-Identifier: GPL" || \
+                echo "WARNING: $f may be missing GPL header"
+            fi
+          done

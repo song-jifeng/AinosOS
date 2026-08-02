@@ -54,23 +54,37 @@ pub struct DaemonConfig {
     pub audit_log: String,
     /// 是否记录所有推理请求
     pub audit_all_requests: bool,
+
+    // TLS 配置
+    /// 是否启用 TLS 加密
+    pub enable_tls: bool,
+    /// TLS 证书路径
+    pub tls_cert_path: String,
+    /// TLS 私钥路径
+    pub tls_key_path: String,
 }
 
 impl Default for DaemonConfig {
     fn default() -> Self {
+        // 使用环境变量 AINOS_HOME 覆盖默认基路径，默认使用相对路径
+        let ainos_home = std::env::var("AINOS_HOME").unwrap_or_else(|_| {
+            if cfg!(windows) { "D:\\Ainos".to_string() } else { "/var/lib/ainos".to_string() }
+        });
+        let data_dir = format!("{}/data", ainos_home);
+        let log_dir = format!("{}/logs", ainos_home);
+        let models_dir = format!("{}/models", ainos_home);
+
         #[cfg(windows)]
-        let (models_dir, socket_path, context_dir, audit_log) = {
-            ("D:\\Ainos\\models".to_string(),
-             "127.0.0.1:9500".to_string(),
-             "D:\\Ainos\\data\\contexts".to_string(),
-             "D:\\Ainos\\logs\\audit.log".to_string())
+        let (socket_path, context_dir, audit_log) = {
+            (format!("127.0.0.1:9500"),
+             format!("{}/contexts", data_dir),
+             format!("{}/audit.log", log_dir))
         };
         #[cfg(not(windows))]
-        let (models_dir, socket_path, context_dir, audit_log) = {
-            ("/var/lib/ainos/models".to_string(),
-             "/var/run/ainos/ai-daemon.sock".to_string(),
-             "/var/lib/ainos/contexts".to_string(),
-             "/var/log/ainos/audit.log".to_string())
+        let (socket_path, context_dir, audit_log) = {
+            ("/var/run/ainos/ai-daemon.sock".to_string(),
+             format!("{}/contexts", data_dir),
+             format!("{}/audit.log", log_dir))
         };
 
         Self {
@@ -98,6 +112,10 @@ impl Default for DaemonConfig {
             log_level: "info".to_string(),
             audit_log,
             audit_all_requests: false,
+
+            enable_tls: false,
+            tls_cert_path: format!("{}/certs/server.crt", ainos_home),
+            tls_key_path: format!("{}/certs/server.key", ainos_home),
         }
     }
 }

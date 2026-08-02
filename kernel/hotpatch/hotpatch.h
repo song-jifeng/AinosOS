@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #ifndef AINOS_HOTPATCH_H
 #define AINOS_HOTPATCH_H
 

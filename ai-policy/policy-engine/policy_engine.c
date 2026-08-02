@@ -176,3 +176,40 @@ void engine_destroy(ai_policy_engine_t *engine) {
     }
     engine_flush_cache(engine);
 }
+
+/* ============================================================
+ * Capability-based 权限检查实现
+ * ============================================================ */
+
+int engine_check_capability(ai_policy_engine_t *engine, const ai_policy_context_t *ctx, ai_capability_t cap) {
+    if (!engine || cap >= AI_CAP_MAX) return 0;
+
+    ai_capability_bitmap_t cap_bit = (ai_capability_bitmap_t)1 << cap;
+
+    /* 紧急切断时禁止特定 capability */
+    if (engine->emergency_deny_caps & cap_bit) {
+        return 0;
+    }
+
+    /* 系统级强制 capability */
+    if (engine->system_caps & cap_bit) {
+        return 1;
+    }
+
+    /* 默认允许的 capability */
+    if (engine->default_caps & cap_bit) {
+        return 1;
+    }
+
+    /* 回退到策略规则评估 */
+    ai_policy_decision_t decision = engine_evaluate(engine, ctx);
+    return (decision == AI_POLICY_ALLOW) ? 1 : 0;
+}
+
+void engine_set_default_caps(ai_policy_engine_t *engine, ai_capability_bitmap_t caps) {
+    if (engine) engine->default_caps = caps;
+}
+
+void engine_set_emergency_deny_caps(ai_policy_engine_t *engine, ai_capability_bitmap_t caps) {
+    if (engine) engine->emergency_deny_caps = caps;
+}

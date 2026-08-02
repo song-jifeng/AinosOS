@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 // Ainos OS - /proc/ai 虚拟 AI 文件系统 (深度实现)
 // 完整的内核 VFS 层，通过 misc device + IOCTL 与用户态 bridge 通信
 // 支持: 推理、嵌入、对话、状态、模型、配置、统计

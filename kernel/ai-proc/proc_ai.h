@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #ifndef AINOS_PROC_AI_H
 #define AINOS_PROC_AI_H
 

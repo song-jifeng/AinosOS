@@ -7,12 +7,16 @@
 //   4. Resource monitoring and throttling
 //   5. IPC via TCP (cross-platform) / Unix Domain Socket (Linux)
 //   6. Thermal-aware power policy scheduling
+//   7. Semantic caching of inference results
 
+mod cache;
 mod config;
+mod context;
 mod ipc;
 mod models;
 mod runtime;
-mod context;
+#[cfg(test)]
+mod tests;
 mod thermal;
 
 use std::sync::Arc;
@@ -63,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Default model: {}", cfg.default_model);
     info!("Local inference: {}", if cfg.enable_local { "enabled" } else { "disabled" });
     info!("Cloud fallback: {}", if cfg.enable_cloud { "enabled" } else { "disabled" });
+    info!("Context directory: {}", cfg.context_dir);
 
     // Initialize shared state
     let state = Arc::new(RwLock::new(AppState::new(cfg)));
@@ -76,12 +81,10 @@ async fn main() -> anyhow::Result<()> {
     info!("Starting IPC listener on {}", ipc_addr);
     let ipc_handle = tokio::spawn(ipc::serve_ipc(state.clone(), ipc_addr));
 
-    // 启动温度监控 (独立于 state，不持有锁)
-    info!("Starting thermal monitor");
-    let thermal_handle = tokio::spawn(async move {
-        let monitor = thermal::ThermalMonitor::new();
-        monitor.start().await;
-    });
+    // 启动温度监控 (自适应轮询 + 事件驱动)
+    info!("Starting thermal monitor with adaptive polling");
+    let thermal_monitor = Arc::new(thermal::ThermalMonitor::new());
+    let thermal_handle = tokio::spawn(thermal_monitor.clone().start());
 
     // Start health check / monitoring
     let _monitor_handle = tokio::spawn(monitor_loop(state.clone()));
@@ -110,6 +113,7 @@ pub struct AppState {
     pub models: models::ModelRegistry,
     pub runtime: runtime::RuntimeManager,
     pub context: context::ContextManager,
+    pub cache: cache::SemanticCache,
     pub stats: DaemonStats,
 }
 
@@ -119,6 +123,7 @@ impl AppState {
             models: models::ModelRegistry::new(),
             runtime: runtime::RuntimeManager::new(),
             context: context::ContextManager::new(),
+            cache: cache::SemanticCache::new(),
             stats: DaemonStats::default(),
             config,
         }
@@ -154,11 +159,12 @@ async fn monitor_loop(state: Arc<RwLock<AppState>>) {
         interval.tick().await;
         let s = state.read().await;
         info!(
-            "Stats: {} total, {} local, {} cloud, {} errors",
+            "Stats: {} total, {} local, {} cloud, {} errors, cache_hit_rate={:.1}%",
             s.stats.total_requests.load(Ordering::Relaxed),
             s.stats.local_inferences.load(Ordering::Relaxed),
             s.stats.cloud_inferences.load(Ordering::Relaxed),
             s.stats.errors.load(Ordering::Relaxed),
+            s.cache.hit_rate() * 100.0,
         );
     }
 }

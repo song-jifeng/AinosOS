@@ -53,13 +53,66 @@ int enforcer_intercept(const ai_policy_context_t *ctx, ai_policy_decision_t *dec
         return 0;
     }
 
+    /* Capability-based 权限检查 */
+    ai_capability_t cap = action_to_capability(ctx->action);
+    if (cap < CAP_MAX) {
+        ai_capability_bitmap_t cap_bit = (ai_capability_bitmap_t)1 << cap;
+
+        /* 紧急切断时禁止特定 capability */
+        if (g_engine.emergency_deny_caps & cap_bit) {
+            *decision = AI_POLICY_DENY;
+            generate_audit(ctx, AI_POLICY_DENY, "Capability denied by emergency policy");
+            return 0;
+        }
+
+        /* 系统级 capability 直接放行 */
+        if (g_engine.system_caps & cap_bit) {
+            *decision = AI_POLICY_ALLOW;
+            generate_audit(ctx, AI_POLICY_ALLOW, "System-mandated capability allowed");
+            return 0;
+        }
+
+        /* 非默认 capability 需要策略明确授权 */
+        if (!(g_engine.default_caps & cap_bit)) {
+            if (!engine_check_capability(&g_engine, ctx, cap)) {
+                *decision = AI_POLICY_DENY;
+                generate_audit(ctx, AI_POLICY_DENY, "Capability not granted");
+                return 0;
+            }
+        }
+    }
+
     *decision = engine_evaluate(&g_engine, ctx);
-    
-    const char *reason = (*decision == AI_POLICY_ALLOW) ? "Policy matched" : 
+
+    const char *reason = (*decision == AI_POLICY_ALLOW) ? "Policy matched" :
                          (*decision == AI_POLICY_ASK) ? "User consent required" : "Default deny";
     generate_audit(ctx, *decision, reason);
-    
+
     return 0;
+}
+
+int enforcer_check_capability(const ai_policy_context_t *ctx, ai_capability_t cap) {
+    if (cap >= CAP_MAX) return 0;
+
+    ai_capability_bitmap_t cap_bit = (ai_capability_bitmap_t)1 << cap;
+
+    /* 紧急切断时禁止特定 capability */
+    if (g_engine.is_cut_off && (g_engine.emergency_deny_caps & cap_bit)) {
+        generate_audit(ctx, AI_POLICY_DENY, "Capability denied by emergency policy");
+        return 0;
+    }
+
+    /* 系统级强制 capability */
+    if (g_engine.system_caps & cap_bit) {
+        generate_audit(ctx, AI_POLICY_ALLOW, "System-mandated capability allowed");
+        return 1;
+    }
+
+    /* 检查 capability 权限 */
+    int result = engine_check_capability(&g_engine, ctx, cap);
+    generate_audit(ctx, result ? AI_POLICY_ALLOW : AI_POLICY_DENY,
+                   result ? "Capability granted" : "Capability denied");
+    return result;
 }
 
 void enforcer_set_audit_callback(ai_policy_audit_cb_t cb) {
@@ -72,6 +125,9 @@ int ai_policy_init(void) { return 0; } /* 实际由 enforcer_init 处理 */
 void ai_policy_destroy(void) { enforcer_destroy(); }
 int ai_policy_check_permission(const ai_policy_context_t *ctx, ai_policy_decision_t *decision) {
     return enforcer_intercept(ctx, decision);
+}
+int ai_policy_check_capability(const ai_policy_context_t *ctx, ai_capability_t cap) {
+    return enforcer_check_capability(ctx, cap);
 }
 void ai_policy_register_audit_cb(ai_policy_audit_cb_t cb) { enforcer_set_audit_callback(cb); }
 void ai_policy_emergency_cut_off(void) { g_engine.is_cut_off = 1; engine_flush_cache(&g_engine); }

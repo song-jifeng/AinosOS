@@ -12,7 +12,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(AINOS_ENABLE_GGML "Build with GGML support" ON)
 option(AINOS_ENABLE_ONNX "Build with ONNX Runtime support" OFF)
 option(AINOS_BUILD_TESTS "Build tests" ON)
-option(AINOS_BUILD_TOOLS "Build tools" ON)
+option(AINOS_BUILD_TOOLS "Build tools" OFF)
 
 # ============================================
 # 依赖查找
@@ -41,6 +41,9 @@ endif()
 # 子目录
 # ============================================
 
+# 电源策略调度 (先编译，被 GGML 引擎依赖)
+add_subdirectory(power-policy)
+
 # GGML 引擎
 if(AINOS_ENABLE_GGML)
     add_subdirectory(ggml-engine)
@@ -56,9 +59,6 @@ add_subdirectory(model-manager)
 
 # 上下文管理器
 add_subdirectory(context-manager)
-
-# 电源策略调度
-add_subdirectory(power-policy)
 
 # ============================================
 # 工具
