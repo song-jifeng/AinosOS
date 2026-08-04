@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>AinosPlatform</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ainos.platform</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Ainos Platform</string>
+    <key>CFBundlePackageType</key>
+    <string>FMWK</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSPrincipalClass</key>
+    <string>AinosPlatform</string>
+
+    <!-- Background Modes -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>fetch</string>
+        <string>processing</string>
+    </array>
+
+    <!-- Background Task Identifiers -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.ainos.background.model_download</string>
+        <string>com.ainos.background.inference</string>
+        <string>com.ainos.background.daemon_sync</string>
+        <string>com.ainos.background.maintenance</string>
+        <string>com.ainos.background.update_check</string>
+    </array>
+
+    <!-- Required Background Modes -->
+    <key>BGProcessingTask</key>
+    <array>
+        <string>com.ainos.background.model_download</string>
+        <string>com.ainos.background.inference</string>
+        <string>com.ainos.background.daemon_sync</string>
+        <string>com.ainos.background.maintenance</string>
+        <string>com.ainos.background.update_check</string>
+    </array>
+
+    <!-- Required Device Capabilities -->
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>arm64</string>
+        <string>metal</string>
+    </array>
+
+    <!-- CoreML -->
+    <key>MLModelCollection</key>
+    <string>com.ainos.models</string>
+
+    <!-- Privacy - Camera -->
+    <key>NSCameraUsageDescription</key>
+    <string>Ainos needs camera access for AI vision features.</string>
+
+    <!-- Privacy - Microphone -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Ainos needs microphone access for AI audio features.</string>
+
+    <!-- Privacy - Photo Library -->
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Ainos needs photo library access for AI image analysis.</string>
+
+    <!-- Privacy - Bluetooth -->
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Ainos uses Bluetooth for device communication.</string>
+
+    <!-- Privacy - Network -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Ainos communicates with the AinosOS daemon on the local network.</string>
+
+    <!-- Privacy - Bonjour -->
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_ainos._tcp</string>
+        <string>_ainos-daemon._tcp</string>
+    </array>
+
+    <!-- App Transport Security -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <key>localhost</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
+            <key>127.0.0.1</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <true/>
+            </dict>
+            <key>ainos.ai</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <false/>
+            </dict>
+            <key>models.ainos.ai</key>
+            <dict>
+                <key>NSExceptionAllowsInsecureHTTPLoads</key>
+                <false/>
+            </dict>
+        </dict>
+    </dict>
+
+    <!-- Required Background Task Time -->
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.ainos.background.model_download</string>
+        <string>com.ainos.background.inference</string>
+        <string>com.ainos.background.daemon_sync</string>
+        <string>com.ainos.background.maintenance</string>
+        <string>com.ainos.background.update_check</string>
+    </array>
+
+    <!-- Minimum OS version -->
+    <key>MinimumOSVersion</key>
+    <string>13.0</string>
+
+    <!-- Supported interface orientations -->
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+</dict>
+</plist>
