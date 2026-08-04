@@ -1369,8 +1369,195 @@ int ai_crypto_get_info(struct ai_crypto_info *info)
 EXPORT_SYMBOL_GPL(ai_crypto_get_info);
 
 int ai_crypto_reset_perf_counters(void)
-{ return 0; }
+{
+	struct ai_crypto_device *dev;
+
+	mutex_lock(&ai_crypto_global_mutex);
+	list_for_each_entry(dev, &ai_crypto_devices, list) {
+		spin_lock(&dev->perf_lock);
+		memset(&dev->perf, 0, sizeof(dev->perf));
+		spin_unlock(&dev->perf_lock);
+		ai_crypto_dbg("Performance counters reset for %s\n", dev->name);
+	}
+	mutex_unlock(&ai_crypto_global_mutex);
+
+	return 0;
+}
 EXPORT_SYMBOL_GPL(ai_crypto_reset_perf_counters);
+
+/*
+ * Additional crypto helper functions
+ * These provide comprehensive cryptographic operations for
+ * AI workload security, including key lifecycle management,
+ * bulk encryption/decryption, and secure hash operations.
+ */
+
+static int ai_crypto_validate_key(struct ai_crypto_key *key)
+{
+	if (!key)
+		return -EINVAL;
+
+	if (key->key_size > 512)
+		return -EINVAL;
+
+	if (key->key_type > AI_CRYPTO_KEY_X25519)
+		return -EINVAL;
+
+	return 0;
+}
+
+static int ai_crypto_generate_key_material(struct ai_crypto_key *key)
+{
+	int ret;
+
+	ret = ai_crypto_validate_key(key);
+	if (ret)
+		return ret;
+
+	get_random_bytes(key->key_data, min_t(u32, key->key_size, 512));
+	get_random_bytes(key->key_iv, 16);
+	key->usage_count = 0;
+
+	return 0;
+}
+
+static int ai_crypto_encrypt_bulk(struct ai_crypto_device *dev,
+				  const u8 *plaintext, unsigned int pt_len,
+				  u8 *ciphertext, unsigned int *ct_len,
+				  const u8 *key, unsigned int key_len,
+				  const u8 *iv, enum ai_crypto_aes_mode mode)
+{
+	struct crypto_sync_skcipher *tfm;
+	const char *alg_name;
+	unsigned int ret;
+
+	switch (mode) {
+	case AI_CRYPTO_AES_CBC: alg_name = "cbc(aes)"; break;
+	case AI_CRYPTO_AES_CTR: alg_name = "ctr(aes)"; break;
+	case AI_CRYPTO_AES_ECB: alg_name = "ecb(aes)"; break;
+	case AI_CRYPTO_AES_XTS: alg_name = "xts(aes)"; break;
+	case AI_CRYPTO_AES_CFB: alg_name = "cfb(aes)"; break;
+	case AI_CRYPTO_AES_OFB: alg_name = "ofb(aes)"; break;
+	default: return -EINVAL;
+	}
+
+	tfm = crypto_alloc_sync_skcipher(alg_name, 0, 0);
+	if (IS_ERR(tfm))
+		return PTR_ERR(tfm);
+
+	ret = crypto_sync_skcipher_setkey(tfm, key, key_len);
+	if (ret)
+		goto out;
+
+	{
+		SKCIPHER_REQUEST_ON_STACK(req, tfm);
+		struct scatterlist sg_src, sg_dst;
+
+		sg_init_one(&sg_src, plaintext, pt_len);
+		sg_init_one(&sg_dst, ciphertext, pt_len);
+
+		skcipher_request_set_sync_tfm(req, tfm);
+		skcipher_request_set_callback(req, 0, NULL, NULL);
+		skcipher_request_set_crypt(req, &sg_src, &sg_dst,
+					   pt_len, iv);
+
+		ret = crypto_skcipher_encrypt(req);
+		if (ret == 0)
+			*ct_len = pt_len;
+
+		skcipher_request_zero(req);
+	}
+
+out:
+	crypto_free_sync_skcipher(tfm);
+	return ret;
+}
+
+static int ai_crypto_decrypt_bulk(struct ai_crypto_device *dev,
+				  const u8 *ciphertext, unsigned int ct_len,
+				  u8 *plaintext, unsigned int *pt_len,
+				  const u8 *key, unsigned int key_len,
+				  const u8 *iv, enum ai_crypto_aes_mode mode)
+{
+	struct crypto_sync_skcipher *tfm;
+	const char *alg_name;
+	unsigned int ret;
+
+	switch (mode) {
+	case AI_CRYPTO_AES_CBC: alg_name = "cbc(aes)"; break;
+	case AI_CRYPTO_AES_CTR: alg_name = "ctr(aes)"; break;
+	case AI_CRYPTO_AES_ECB: alg_name = "ecb(aes)"; break;
+	case AI_CRYPTO_AES_XTS: alg_name = "xts(aes)"; break;
+	case AI_CRYPTO_AES_CFB: alg_name = "cfb(aes)"; break;
+	case AI_CRYPTO_AES_OFB: alg_name = "ofb(aes)"; break;
+	default: return -EINVAL;
+	}
+
+	tfm = crypto_alloc_sync_skcipher(alg_name, 0, 0);
+	if (IS_ERR(tfm))
+		return PTR_ERR(tfm);
+
+	ret = crypto_sync_skcipher_setkey(tfm, key, key_len);
+	if (ret)
+		goto out;
+
+	{
+		SKCIPHER_REQUEST_ON_STACK(req, tfm);
+		struct scatterlist sg_src, sg_dst;
+
+		sg_init_one(&sg_src, ciphertext, ct_len);
+		sg_init_one(&sg_dst, plaintext, ct_len);
+
+		skcipher_request_set_sync_tfm(req, tfm);
+		skcipher_request_set_callback(req, 0, NULL, NULL);
+		skcipher_request_set_crypt(req, &sg_src, &sg_dst,
+					   ct_len, iv);
+
+		ret = crypto_skcipher_decrypt(req);
+		if (ret == 0)
+			*pt_len = ct_len;
+
+		skcipher_request_zero(req);
+	}
+
+out:
+	crypto_free_sync_skcipher(tfm);
+	return ret;
+}
+
+static int ai_crypto_compute_hmac(const u8 *key, unsigned int key_len,
+				  const u8 *data, unsigned int data_len,
+				  u8 *mac, unsigned int *mac_len,
+				  const char *hash_alg)
+{
+	struct crypto_shash *tfm;
+	unsigned int ret;
+
+	tfm = crypto_alloc_shash(hash_alg, 0, 0);
+	if (IS_ERR(tfm))
+		return PTR_ERR(tfm);
+
+	ret = crypto_shash_setkey(tfm, key, key_len);
+	if (ret)
+		goto out;
+
+	ret = crypto_shash_tfm_digest(tfm, data, data_len, mac);
+	if (ret == 0)
+		*mac_len = crypto_shash_digestsize(tfm);
+
+out:
+	crypto_free_shash(tfm);
+	return ret;
+}
+
+static int ai_crypto_secure_zero(void *buf, unsigned int len)
+{
+	if (!buf || !len)
+		return -EINVAL;
+
+	memzero_explicit(buf, len);
+	return 0;
+}
 
 module_init(ai_crypto_init);
 module_exit(ai_crypto_exit);

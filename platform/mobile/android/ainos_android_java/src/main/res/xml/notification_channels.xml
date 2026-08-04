@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<notification-channels>
+    <channel
+        id="ainos_foreground"
+        name="Ainos Service"
+        description="Ainos AI platform background service notifications"
+        importance="low" />
+    <channel
+        id="ainos_inference"
+        name="Ainos Inference"
+        description="AI inference progress and completion notifications"
+        importance="low" />
+    <channel
+        id="ainos_downloads"
+        name="Ainos Downloads"
+        description="Model download progress notifications"
+        importance="low" />
+    <channel
+        id="ainos_alerts"
+        name="Ainos Alerts"
+        description="Important alerts and warnings"
+        importance="high" />
+    <channel
+        id="ainos_thermal"
+        name="Thermal Warnings"
+        description="Device thermal status warnings"
+        importance="high" />
+    <channel
+        id="ainos_daemon"
+        name="Daemon Connection"
+        description="AinosOS daemon connection status"
+        importance="low" />
+</notification-channels>

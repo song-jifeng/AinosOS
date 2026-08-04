@@ -31,10 +31,6 @@ logger = logging.getLogger(__name__)
 
 # Regex for ICU message placeholders: {var}, {var, plural, ...}
 _ICU_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
-_ICU_PLURAL_RE = re.compile(
-    r"\{(\w+),\s*plural,\s*(.+?)\}",
-    re.DOTALL,
-)
 _ICU_SELECT_RE = re.compile(
     r"\{(\w+),\s*select,\s*(.+?)\}",
     re.DOTALL,
@@ -447,32 +443,81 @@ class Translator:
         if isinstance(value, dict):
             plural_form = self._plural_rules.get_plural_form(count, locale)
             if plural_form in value:
-                return str(value[plural_form])
-            if "other" in value:
-                return str(value["other"])
-            return str(value)
+                result = str(value[plural_form])
+            elif "other" in value:
+                result = str(value["other"])
+            else:
+                result = str(value)
+            # Replace {count} placeholder with the actual count
+            result = result.replace("{count}", str(count))
+            return result
 
         if isinstance(value, str):
-            # ICU plural syntax
-            def _replace_icu_plural(m: re.Match) -> str:
-                var_name = m.group(1)
-                body = m.group(2)
-                forms = self._parse_icu_plural_forms(body)
-                plural_form = self._plural_rules.get_plural_form(count, locale)
-                # Also inject the count variable
-                result = forms.get(plural_form) or forms.get("other", "")
-                # Replace {var} in the resolved form
-                result = result.replace(f"{{{var_name}}}", str(count))
-                return result
-
-            result = _ICU_PLURAL_RE.sub(_replace_icu_plural, value)
+            # Process ICU plural and select expressions using bracket matching
+            result = self._process_icu_expressions(value, count, locale)
             # Also handle simple {var} placeholders
             result = result.replace("{count}", str(count))
-            # Handle select forms
-            result = _ICU_SELECT_RE.sub(self._replace_icu_select, result)
             return result
 
         return str(value)
+
+    @staticmethod
+    def _process_icu_expressions(text: str, count: int, locale: str) -> str:
+        """Process ICU plural/select expressions in a string using bracket matching.
+
+        Finds outermost {var, plural, ...} and {var, select, ...} patterns
+        by matching braces properly.
+        """
+        result = []
+        i = 0
+        while i < len(text):
+            if text[i] == '{':
+                # Find the matching closing brace
+                brace_depth = 1
+                j = i + 1
+                while j < len(text) and brace_depth > 0:
+                    if text[j] == '{':
+                        brace_depth += 1
+                    elif text[j] == '}':
+                        brace_depth -= 1
+                    j += 1
+
+                if brace_depth == 0:
+                    inner = text[i + 1:j - 1]
+                    # Check if this is a plural or select expression
+                    if ', plural,' in inner or ',plural,' in inner:
+                        # Parse the plural expression
+                        idx = inner.find(', plural')
+                        var_name = inner[:idx].strip()
+                        body_start = idx + len(', plural')
+                        # Skip comma if present
+                        if body_start < len(inner) and inner[body_start] == ',':
+                            body_start += 1
+                        body = inner[body_start:].strip()
+                        forms = Translator._parse_icu_plural_forms(body)
+                        plural_form = PluralRules().get_plural_form(count, locale)
+                        resolved = forms.get(plural_form) or forms.get("other", "")
+                        # Replace {var_name} in the resolved form
+                        resolved = resolved.replace(f"{{{var_name}}}", str(count))
+                        result.append(resolved)
+                    elif ', select,' in inner or ',select,' in inner:
+                        # For select, just return the variable name
+                        idx = inner.find(', select')
+                        var_name = inner[:idx].strip()
+                        result.append(f"{{{var_name}}}")
+                    else:
+                        # Not a plural/select expression, keep as-is
+                        result.append(text[i:j])
+                    i = j
+                else:
+                    # Unmatched brace, keep as-is
+                    result.append(text[i])
+                    i += 1
+            else:
+                result.append(text[i])
+                i += 1
+
+        return ''.join(result)
 
     @staticmethod
     def _replace_icu_select(m: re.Match) -> str:
@@ -491,11 +536,47 @@ class Translator:
         """
         result: dict[str, str] = {}
         # Match patterns like: one { ... } other { ... }
-        pattern = re.compile(r"(\w+)\s*\{([^}]*)\}")
-        for m in pattern.finditer(body):
-            form = m.group(1)
-            text = m.group(2).strip()
-            result[form] = text
+        # Use a more robust approach: find form names and their brace-delimited content
+        i = 0
+        while i < len(body):
+            # Skip whitespace
+            while i < len(body) and body[i].isspace():
+                i += 1
+            if i >= len(body):
+                break
+
+            # Read form name
+            form_start = i
+            while i < len(body) and body[i].isalpha():
+                i += 1
+            if i == form_start:
+                i += 1
+                continue
+            form = body[form_start:i]
+
+            # Skip whitespace before brace
+            while i < len(body) and body[i].isspace():
+                i += 1
+            if i >= len(body) or body[i] != '{':
+                continue
+
+            # Read brace-delimited content (handle nested braces)
+            brace_depth = 0
+            content_start = i
+            while i < len(body):
+                if body[i] == '{':
+                    brace_depth += 1
+                elif body[i] == '}':
+                    brace_depth -= 1
+                    if brace_depth == 0:
+                        # Extract content without the outer braces
+                        content = body[content_start + 1:i]
+                        result[form] = content.strip()
+                        i += 1
+                        break
+                i += 1
+            i += 1
+
         return result
 
     @staticmethod

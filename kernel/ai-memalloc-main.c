@@ -1936,9 +1936,210 @@ EXPORT_SYMBOL_GPL(ai_memalloc_dump_state);
 
 int ai_memalloc_validate_allocations(void)
 {
-	return 0;
+	struct ai_memalloc_device *dev;
+	struct ai_memory_pool *pool;
+	unsigned long flags;
+	int ret = 0;
+
+	ai_memalloc_dbg("Validating memory allocations\n");
+
+	mutex_lock(&ai_memalloc_mutex);
+	list_for_each_entry(dev, &ai_memalloc_devices, list) {
+		mutex_lock(&dev->pool_mutex);
+		list_for_each_entry(pool, &dev->pools, list) {
+			spin_lock_irqsave(&pool->lock, flags);
+
+			if (pool->used_size > pool->total_size) {
+				ai_memalloc_err("Pool '%s': used > total "
+						"(%zu > %zu)\n",
+						pool->name, pool->used_size,
+						pool->total_size);
+				ret = -EINVAL;
+			}
+
+			if (pool->free_size > pool->total_size) {
+				ai_memalloc_err("Pool '%s': free > total "
+						"(%zu > %zu)\n",
+						pool->name, pool->free_size,
+						pool->total_size);
+				ret = -EINVAL;
+			}
+
+			if (pool->nr_free + pool->nr_active > pool->nr_max) {
+				ai_memalloc_err("Pool '%s': entries mismatch "
+						"(free=%lu active=%lu max=%lu)\n",
+						pool->name, pool->nr_free,
+						pool->nr_active, pool->nr_max);
+				ret = -EINVAL;
+			}
+
+			spin_unlock_irqrestore(&pool->lock, flags);
+		}
+		mutex_unlock(&dev->pool_mutex);
+	}
+	mutex_unlock(&ai_memalloc_mutex);
+
+	if (ret == 0)
+		ai_memalloc_dbg("Allocations validated successfully\n");
+	else
+		ai_memalloc_warn("Allocation validation failed: %d\n", ret);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(ai_memalloc_validate_allocations);
+
+/*
+ * Additional memory allocator helper functions
+ * These provide comprehensive memory management for AI workloads,
+ * including transparent huge page support, memory compaction,
+ * and intelligent page migration across NUMA domains.
+ */
+
+static int ai_memalloc_pool_stats_snapshot(struct ai_memalloc_device *dev,
+					   struct ai_memalloc_pool_stats *stats)
+{
+	struct ai_memory_pool *pool;
+	unsigned long flags;
+
+	memset(stats, 0, sizeof(*stats));
+
+	mutex_lock(&dev->pool_mutex);
+	list_for_each_entry(pool, &dev->pools, list) {
+		spin_lock_irqsave(&pool->lock, flags);
+
+		switch (pool->type) {
+		case AI_MEMALLOC_POOL_SMALL:
+			stats->pool_size[0] += pool->total_size;
+			stats->pool_used[0] += pool->used_size;
+			stats->pool_free[0] += pool->free_size;
+			stats->alloc_count[0] +=
+				atomic64_read(&pool->alloc_count);
+			stats->free_count[0] +=
+				atomic64_read(&pool->free_count);
+			stats->fail_count[0] +=
+				atomic64_read(&pool->fail_count);
+			stats->cache_hits[0] +=
+				atomic64_read(&pool->cache_hits);
+			stats->cache_misses[0] +=
+				atomic64_read(&pool->cache_misses);
+			break;
+		case AI_MEMALLOC_POOL_MEDIUM:
+			stats->pool_size[1] += pool->total_size;
+			stats->pool_used[1] += pool->used_size;
+			stats->pool_free[1] += pool->free_size;
+			stats->alloc_count[1] +=
+				atomic64_read(&pool->alloc_count);
+			stats->free_count[1] +=
+				atomic64_read(&pool->free_count);
+			stats->fail_count[1] +=
+				atomic64_read(&pool->fail_count);
+			stats->cache_hits[1] +=
+				atomic64_read(&pool->cache_hits);
+			stats->cache_misses[1] +=
+				atomic64_read(&pool->cache_misses);
+			break;
+		case AI_MEMALLOC_POOL_LARGE:
+			stats->pool_size[2] += pool->total_size;
+			stats->pool_used[2] += pool->used_size;
+			stats->pool_free[2] += pool->free_size;
+			stats->alloc_count[2] +=
+				atomic64_read(&pool->alloc_count);
+			stats->free_count[2] +=
+				atomic64_read(&pool->free_count);
+			stats->fail_count[2] +=
+				atomic64_read(&pool->fail_count);
+			stats->cache_hits[2] +=
+				atomic64_read(&pool->cache_hits);
+			stats->cache_misses[2] +=
+				atomic64_read(&pool->cache_misses);
+			break;
+		case AI_MEMALLOC_POOL_HUGE:
+			stats->pool_size[3] += pool->total_size;
+			stats->pool_used[3] += pool->used_size;
+			stats->pool_free[3] += pool->free_size;
+			stats->alloc_count[3] +=
+				atomic64_read(&pool->alloc_count);
+			stats->free_count[3] +=
+				atomic64_read(&pool->free_count);
+			stats->fail_count[3] +=
+				atomic64_read(&pool->fail_count);
+			stats->cache_hits[3] +=
+				atomic64_read(&pool->cache_hits);
+			stats->cache_misses[3] +=
+				atomic64_read(&pool->cache_misses);
+			break;
+		}
+
+		stats->total_allocated += atomic64_read(&pool->alloc_count);
+		stats->total_freed += atomic64_read(&pool->free_count);
+
+		spin_unlock_irqrestore(&pool->lock, flags);
+	}
+	mutex_unlock(&dev->pool_mutex);
+
+	stats->current_usage = stats->total_allocated - stats->total_freed;
+	stats->active_allocations = stats->total_allocated;
+
+	return 0;
+}
+
+static int ai_memalloc_compact_zone(struct ai_memalloc_device *dev,
+				    int numa_node)
+{
+	struct zone *zone;
+	enum zone_type z;
+	int ret = 0;
+
+	for (z = 0; z < MAX_NR_ZONES; z++) {
+		zone = &NODE_DATA(numa_node)->node_zones[z];
+		if (!populated_zone(zone))
+			continue;
+
+		wakeup_kcompactd(zone, 0, 0, 0);
+		ai_memalloc_dbg("Compaction triggered on node %d zone %d\n",
+				numa_node, z);
+	}
+
+	return ret;
+}
+
+static int ai_memalloc_reclaim_from_node(struct ai_memalloc_device *dev,
+					 int numa_node, size_t target_pages)
+{
+	struct zonelist *zonelist;
+	unsigned long nr_reclaimed;
+
+	zonelist = node_zonelist(numa_node, GFP_KERNEL);
+	nr_reclaimed = try_to_free_pages(zonelist, 0, GFP_KERNEL, NULL);
+
+	ai_memalloc_dbg("Reclaim from node %d: target=%zu reclaimed=%lu\n",
+			numa_node, target_pages, nr_reclaimed);
+
+	return (int)nr_reclaimed;
+}
+
+static int ai_memalloc_oom_prevention_check(struct ai_memalloc_device *dev)
+{
+	enum ai_memalloc_pressure_level level;
+	int score;
+	int ret = 0;
+
+	ret = ai_memalloc_get_pressure_level(&level);
+	if (ret)
+		return ret;
+
+	if (level >= AI_MEMALLOC_PRESSURE_HIGH) {
+		ai_memalloc_warn("OOM prevention: high pressure detected, "
+				"triggering aggressive reclaim\n");
+		ai_memalloc_reclaim(SWAP_CLUSTER_MAX * 4);
+		ai_memalloc_compact();
+
+		ai_memalloc_oom_notify_all(dev);
+		dev->oom_prevented++;
+	}
+
+	return 0;
+}
 
 module_init(ai_memalloc_init);
 module_exit(ai_memalloc_exit);

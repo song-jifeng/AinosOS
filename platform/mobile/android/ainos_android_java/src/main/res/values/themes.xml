@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Ainos" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">#FF1976D2</item>
+        <item name="android:colorPrimaryDark">#FF1565C0</item>
+        <item name="android:colorAccent">#FF42A5F5</item>
+        <item name="android:windowBackground">#FFFFFFFF</item>
+        <item name="android:statusBarColor">#FF1565C0</item>
+        <item name="android:navigationBarColor">#FF000000</item>
+    </style>
+</resources>

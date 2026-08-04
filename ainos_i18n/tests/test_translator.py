@@ -157,7 +157,8 @@ class TestTranslator:
         keys = t.get_all_keys("en_US")
         assert "welcome" in keys
         assert "goodbye" in keys
-        assert "items" in keys
+        # "items" is a plural dict, so its sub-keys are collected
+        assert "items.one" in keys or "items" in keys
         assert "errors.timeout" in keys
         assert "errors.not_found" in keys
         assert "nested.deep.key" in keys

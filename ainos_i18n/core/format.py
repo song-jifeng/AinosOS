@@ -473,6 +473,19 @@ class Formatter:
                     return datetime.datetime.strptime(value, fmt)
                 except ValueError:
                     continue
+            # Try common time-only formats (use today's date)
+            now = datetime.datetime.now()
+            for fmt in [
+                "%H:%M:%S", "%H:%M", "%I:%M:%S %p", "%I:%M %p",
+                "%H:%M:%S.%f",
+            ]:
+                try:
+                    parsed = datetime.datetime.strptime(value, fmt)
+                    return parsed.replace(
+                        year=now.year, month=now.month, day=now.day,
+                    )
+                except ValueError:
+                    continue
             raise ValueError(f"Unable to parse date string: {value!r}")
         raise TypeError(f"Unsupported date type: {type(value).__name__}")
 

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ainos AI</string>
+    <string name="channel_ainos_service">Ainos Service</string>
+    <string name="channel_ainos_inference">Ainos Inference</string>
+    <string name="channel_ainos_downloads">Ainos Downloads</string>
+    <string name="channel_ainos_alerts">Ainos Alerts</string>
+    <string name="foreground_service_title">Ainos AI Platform</string>
+    <string name="foreground_service_text">Running in background</string>
+    <string name="thermal_warning_title">Thermal Warning</string>
+    <string name="thermal_warning_text">Device is overheating. Performance may be limited.</string>
+    <string name="battery_low_title">Battery Low</string>
+    <string name="battery_low_text">Battery level is low. Background tasks may be paused.</string>
+    <string name="model_download_title">Downloading Model</string>
+    <string name="model_download_text">Downloading AI model...</string>
+    <string name="inference_running_title">Inference Running</string>
+    <string name="inference_running_text">AI inference in progress</string>
+    <string name="daemon_connected_title">Daemon Connected</string>
+    <string name="daemon_connected_text">Connected to AinosOS daemon</string>
+    <string name="daemon_disconnected_title">Daemon Disconnected</string>
+    <string name="daemon_disconnected_text">Disconnected from AinosOS daemon</string>
+    <string name="notification_stop">Stop</string>
+    <string name="notification_pause">Pause</string>
+    <string name="notification_resume">Resume</string>
+</resources>
