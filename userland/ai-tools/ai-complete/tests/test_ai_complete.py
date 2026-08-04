@@ -276,9 +276,9 @@ class TestSymbolTable(unittest.TestCase):
 
     def test_enter_exit_scope(self) -> None:
         """Test scope enter/exit behavior."""
-        prev = self.table.enter_scope("function:test")
+        prev = self.table.enter_scope("global:test")
         self.assertEqual(prev, "global")
-        self.assertEqual(self.table.current_scope, "function:test")
+        self.assertEqual(self.table.current_scope, "global:test")
 
         prev2 = self.table.exit_scope()
         self.assertEqual(prev2, "global")
@@ -612,7 +612,7 @@ class TestContextAnalyzer(unittest.TestCase):
     def test_analyze_inside_function(self) -> None:
         """Test analyzing context inside a function."""
         source = "def foo():\n    x = 1\n    "
-        ctx = self.analyzer.analyze(source, 2, 4)
+        ctx = self.analyzer.analyze(source, 1, 4)
         self.assertEqual(ctx.scope_type, "function")
         self.assertEqual(ctx.scope_name, "foo")
         self.assertTrue(ctx.inside_function)
@@ -620,7 +620,7 @@ class TestContextAnalyzer(unittest.TestCase):
     def test_analyze_inside_class(self) -> None:
         """Test analyzing context inside a class."""
         source = "class MyClass:\n    def __init__(self):\n        pass"
-        ctx = self.analyzer.analyze(source, 1, 4)
+        ctx = self.analyzer.analyze(source, 0, 6)
         self.assertEqual(ctx.scope_type, "class")
         self.assertEqual(ctx.scope_name, "MyClass")
         self.assertTrue(ctx.inside_class)

@@ -16,17 +16,17 @@ import threading
 from typing import Any, Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass, field
 
-from .index import (
+from index import (
     BaseIndex, FlatIndex, HNSWIndex, IVFIndex, PQIndex, LSHIndex, HybridIndex
 )
-from .index.base import BaseIndex
-from .distance import DistanceMetric, MetricType
-from .storage import MemoryStorage, DiskStorage, SQLiteStorage
-from .utils.config import (
+from index.base import BaseIndex
+from distance import DistanceMetric, MetricType
+from storage import MemoryStorage, DiskStorage, SQLiteStorage
+from utils.config import (
     IndexConfig, IndexType, StorageType, MetricType, ConfigManager, global_config
 )
-from .utils.metrics import MetricsCollector, timed
-from .utils.serializer import Serializer, VectorSerializer
+from utils.metrics import MetricsCollector, timed
+from utils.serializer import Serializer, VectorSerializer
 
 
 class SearchResult:
@@ -486,7 +486,7 @@ class VectorDatabase:
         Returns:
             True if successful.
         """
-        from .utils.config import IndexConfig
+        from utils.config import IndexConfig
 
         try:
             # Load database metadata

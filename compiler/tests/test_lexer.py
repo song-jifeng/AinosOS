@@ -143,7 +143,7 @@ class TestLexer:
         lexer = Lexer("// this is a comment\nlet x = 42;")
         tokens = lexer.tokenize()
         non_eof = [t for t in tokens if t.type != TokenType.EOF]
-        assert len(non_eof) == 4  # let, x, =, 42, ;
+        assert len(non_eof) == 5  # let, x, =, 42, ;
         assert non_eof[0].type == TokenType.LET
 
     def test_block_comments(self):
@@ -151,14 +151,14 @@ class TestLexer:
         lexer = Lexer("/* block comment */ let x = 42;")
         tokens = lexer.tokenize()
         non_eof = [t for t in tokens if t.type != TokenType.EOF]
-        assert len(non_eof) == 4
+        assert len(non_eof) == 5
 
     def test_hash_comments(self):
         """测试 hash 注释"""
         lexer = Lexer("# hash comment\nlet x = 42;")
         tokens = lexer.tokenize()
         non_eof = [t for t in tokens if t.type != TokenType.EOF]
-        assert len(non_eof) == 4
+        assert len(non_eof) == 5
 
     def test_line_numbers(self):
         """测试行号记录"""
@@ -174,7 +174,7 @@ class TestLexer:
     def test_invalid_char(self):
         """测试无效字符"""
         reporter = ErrorReporter()
-        lexer = Lexer("let @x = 42;", error_reporter=reporter)
+        lexer = Lexer("let `x = 42;", error_reporter=reporter)
         tokens = lexer.tokenize()
         assert reporter.has_errors()
 

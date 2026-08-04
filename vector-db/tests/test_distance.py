@@ -399,6 +399,11 @@ class TestEdgeCases:
         """Test pairwise with single vectors."""
         a = np.random.randn(1, 128).astype(np.float32)
         b = np.random.randn(1, 128).astype(np.float32)
+        # Normalize for cosine
+        a = a / np.linalg.norm(a)
+        b = b / np.linalg.norm(b)
         dists = cosine_pairwise(a, b)
         assert dists.shape == (1, 1)
-        assert np.isclose(dists[0, 0], 0.0, atol=1e-6)
+        # Same vector should have distance 0
+        dists_same = cosine_pairwise(a, a)
+        assert np.isclose(dists_same[0, 0], 0.0, atol=1e-6)

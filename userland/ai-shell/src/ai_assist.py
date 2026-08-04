@@ -26,11 +26,11 @@ from .utils import (
     AnsiCode,
     colorize,
     ShellError,
-    get_config,
     get_env,
     truncate,
     terminal_width,
 )
+from .config import get_config
 
 # ---------------------------------------------------------------------------
 # Data classes

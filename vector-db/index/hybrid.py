@@ -15,13 +15,13 @@ import json
 from typing import Any, Dict, List, Optional, Set, Tuple
 from threading import Lock
 
-from .base import BaseIndex
-from .flat import FlatIndex
-from .hnsw import HNSWIndex
-from .ivf import IVFIndex
-from .pq import PQIndex
-from .lsh import LSHIndex
-from ..utils.config import IndexConfig, IndexType, MetricType
+from index.base import BaseIndex
+from index.flat import FlatIndex
+from index.hnsw import HNSWIndex
+from index.ivf import IVFIndex
+from index.pq import PQIndex
+from index.lsh import LSHIndex
+from utils.config import IndexConfig, IndexType, MetricType
 
 
 class HybridIndex(BaseIndex):
@@ -376,7 +376,7 @@ class HybridIndex(BaseIndex):
             True if successful.
         """
         try:
-            from ..utils.config import IndexConfig
+            from utils.config import IndexConfig
 
             with open(os.path.join(path, 'index.json'), 'r') as f:
                 data = json.load(f)

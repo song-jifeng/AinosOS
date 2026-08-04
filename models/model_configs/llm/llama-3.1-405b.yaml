@@ -1,0 +1,78 @@
+name: "LLaMA 3.1 405B"
+description: "Meta LLaMA 3.1 405B - 旗舰级大语言模型，最先进的推理和生成能力"
+version: "3.1.0"
+model_type: "llm"
+architecture: "llama"
+context_length: 131072
+parameters: "405B"
+
+architecture_detail:
+  num_layers: 128
+  num_heads: 128
+  num_kv_heads: 16
+  hidden_size: 16384
+  intermediate_size: 57344
+  vocab_size: 128256
+  rope_theta: 500000.0
+  norm_type: "rms_norm"
+  activation: "silu"
+
+tokenizer:
+  type: "tiktoken"
+  vocab_size: 128256
+  add_bos: true
+  add_eos: true
+
+quantization:
+  - type: "Q8_0"
+    size_gb: 405.0
+  - type: "Q6_K"
+    size_gb: 300.0
+  - type: "Q5_K_M"
+    size_gb: 260.0
+  - type: "Q4_K_M"
+    size_gb: 220.0
+  - type: "Q4_K_S"
+    size_gb: 205.0
+  - type: "Q3_K_M"
+    size_gb: 165.0
+  - type: "Q2_K"
+    size_gb: 130.0
+
+recommended:
+  temperature: 0.6
+  top_p: 0.9
+  repeat_penalty: 1.1
+  num_threads: 32
+  batch_size: 4
+  context_size: 2048
+  flash_attention: true
+  gpu_layers: -1
+  tensor_parallel: 8
+  pipeline_parallel: 4
+
+special_tokens:
+  bos_token: "<|begin_of_text|>"
+  eos_token: "<|end_of_text|>"
+  pad_token: "<|end_of_text|>"
+
+stop_tokens:
+  - "<|eot_id|>"
+  - "<|end_of_text|>"
+
+required_memory:
+  min_gb: 130.0
+  recommended_gb: 256.0
+  max_gb: 512.0
+
+performance:
+  mmlu: 0.88
+  hellaswag: 0.91
+  arc_challenge: 0.78
+  truthfulqa: 0.58
+  tokens_per_second: 2.5
+
+file_info:
+  format: "gguf"
+  recommended_file: "llama-3.1-405b-q4_k_m.gguf"
+  sha256: "a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8"

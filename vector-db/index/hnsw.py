@@ -26,8 +26,8 @@ import pickle
 from typing import Any, Dict, List, Optional, Set, Tuple
 from threading import Lock
 
-from .base import BaseIndex
-from ..utils.config import IndexConfig
+from index.base import BaseIndex
+from utils.config import IndexConfig
 
 
 class HNSWIndex(BaseIndex):

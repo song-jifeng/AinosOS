@@ -39,7 +39,6 @@ from src.builtins import (
     builtin_sleep,
     builtin_yes,
 )
-from .conftest import temp_dir, temp_config_dir
 
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,6 @@ Algorithm:
 """
 
 import numpy as np
-from sklearn.cluster import KMeans as SKLearnKMeans
 import os
 import json
 import pickle
@@ -24,8 +23,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from threading import Lock
 from collections import defaultdict
 
-from .base import BaseIndex
-from ..utils.config import IndexConfig
+from index.base import BaseIndex
+from utils.config import IndexConfig
 
 
 class KMeans:

@@ -8,9 +8,6 @@ abstractions.
 
 from __future__ import annotations
 
-import ctypes
-import errno
-import fcntl
 import os
 import platform
 import re
@@ -18,10 +15,8 @@ import shlex
 import shutil
 import signal
 import stat
-import struct
 import subprocess
 import sys
-import termios
 import textwrap
 import time
 import typing as t
@@ -31,15 +26,28 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import IO, Any, Callable, Deque, Dict, List, Optional, Sequence, Tuple, Union
 
+# Platform-specific imports
+IS_WINDOWS: bool = platform.system().lower() == "windows"
+IS_LINUX: bool = platform.system().lower() == "linux"
+IS_MACOS: bool = platform.system().lower() == "darwin"
+IS_POSIX: bool = not IS_WINDOWS
+
+if IS_WINDOWS:
+    import ctypes
+    import msvcrt
+if IS_POSIX:
+    import errno
+    import fcntl
+    import struct
+    import termios
+    import pwd
+    import grp
+
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
 
 PLATFORM: str = platform.system().lower()
-IS_WINDOWS: bool = PLATFORM == "windows"
-IS_LINUX: bool = PLATFORM == "linux"
-IS_MACOS: bool = PLATFORM == "darwin"
-IS_POSIX: bool = not IS_WINDOWS
 IS_64BIT: bool = sys.maxsize > 2**32
 
 # ---------------------------------------------------------------------------

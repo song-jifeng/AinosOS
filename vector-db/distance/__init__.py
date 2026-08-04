@@ -11,7 +11,7 @@ import numpy as np
 from typing import Callable, Optional
 from enum import Enum
 
-from ..utils.config import MetricType
+from utils.config import MetricType
 
 
 class DistanceMetric:

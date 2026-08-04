@@ -26,7 +26,6 @@ from src.utils import (
 from src.config import get_config, set_alias, unset_alias, get_alias
 from src.parser import parse_line, expand_variables
 from src.executor import ExecutionResult, CommandExecutor, get_executor
-from .conftest import temp_dir, temp_config_dir, sample_files
 
 
 # ---------------------------------------------------------------------------

@@ -725,8 +725,7 @@ class TypeInferrer:
                 return "str"
             elif isinstance(node, ast.JoinedStr):
                 return "str"
-            elif isinstance(node, ast.fstring):
-                return "str"
+            # ast.fstring is not available in all Python versions; JoinedStr handles f-strings
             elif isinstance(node, ast.NamedExpr):
                 return self.infer_type(node.value, symbol_table)
             elif isinstance(node, ast.Compare):
@@ -1523,7 +1522,9 @@ class PriorityScorer:
             weights: Optional custom weight dictionary. Falls back to
                      SCORE_WEIGHTS if not provided.
         """
-        self._weights = weights if weights is not None else SCORE_WEIGHTS.copy()
+        self._weights = SCORE_WEIGHTS.copy()
+        if weights is not None:
+            self._weights.update(weights)
 
     def score(
         self,
@@ -3512,8 +3513,13 @@ class PythonCompletionEngine(CompletionEngine):
                 ))
 
         # Recurse into children for composite nodes
+        # Include all statement types to ensure top-level module children
+        # (FunctionDef, ClassDef, Assign, etc.) are properly collected.
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.For, ast.AsyncFor, ast.While, ast.With,
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                                   ast.Assign, ast.AnnAssign, ast.AugAssign,
+                                   ast.Import, ast.ImportFrom,
+                                   ast.For, ast.AsyncFor, ast.While, ast.With,
                                    ast.AsyncWith, ast.Try, ast.If)):
                 self._walk_and_collect(child, scope=scope, parent_class=parent_class)
 

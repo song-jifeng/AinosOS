@@ -10,11 +10,11 @@ import json
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
-from .protocol import (
+from server.protocol import (
     Protocol, Request, Response, ErrorCode, SUPPORTED_METHODS, METHOD_SCHEMAS
 )
-from ..database import VectorDatabase
-from ..utils.serializer import Serializer, NDJSONProtocol
+from database import VectorDatabase
+from utils.serializer import Serializer, NDJSONProtocol
 
 
 class RequestHandler:

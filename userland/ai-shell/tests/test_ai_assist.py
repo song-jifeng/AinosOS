@@ -41,7 +41,6 @@ from src.completion import (
     CompletionPrediction,
     get_ai_completion_engine,
 )
-from .conftest import temp_dir, temp_config_dir
 
 
 # ---------------------------------------------------------------------------

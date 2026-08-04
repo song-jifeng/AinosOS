@@ -1,0 +1,73 @@
+name: "DeepSeek Coder V2"
+description: "DeepSeek Coder V2 - 专注于代码生成和理解的大语言模型，MoE 架构"
+version: "2.0.0"
+model_type: "llm"
+architecture: "deepseek2"
+context_length: 131072
+parameters: "236B (MoE)"
+
+architecture_detail:
+  num_layers: 60
+  num_heads: 48
+  num_kv_heads: 6
+  hidden_size: 5120
+  intermediate_size: 12288
+  vocab_size: 102400
+  moe:
+    num_experts: 160
+    num_experts_per_tok: 6
+    expert_intermediate_size: 1536
+  attention:
+    type: "multi_latent"
+    kv_compression: 512
+  norm_type: "rms_norm"
+  activation: "silu"
+
+tokenizer:
+  type: "huggingface"
+  vocab_size: 102400
+
+quantization:
+  - type: "Q8_0"
+    size_gb: 130.0
+  - type: "Q4_K_M"
+    size_gb: 70.0
+  - type: "Q4_K_S"
+    size_gb: 65.0
+  - type: "Q3_K_M"
+    size_gb: 52.0
+  - type: "Q2_K"
+    size_gb: 42.0
+
+recommended:
+  temperature: 0.2
+  top_p: 0.95
+  repeat_penalty: 1.0
+  num_threads: 16
+  batch_size: 8
+  context_size: 8192
+  flash_attention: true
+  gpu_layers: -1
+  tensor_parallel: 4
+
+special_tokens:
+  bos_token: ""
+
+stop_tokens:
+  - ""
+
+required_memory:
+  min_gb: 50.0
+  recommended_gb: 80.0
+  max_gb: 140.0
+
+performance:
+  humaneval: 0.76
+  mbpp: 0.73
+  cruxeval: 0.62
+  tokens_per_second: 18
+
+file_info:
+  format: "gguf"
+  recommended_file: "deepseek-coder-v2-q4_k_m.gguf"
+  sha256: "b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5"

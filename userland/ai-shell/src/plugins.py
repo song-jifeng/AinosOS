@@ -33,8 +33,8 @@ from .utils import (
     file_exists,
     read_file,
     write_file,
-    get_config,
 )
+from .config import get_config
 
 # ---------------------------------------------------------------------------
 # Plugin hook types

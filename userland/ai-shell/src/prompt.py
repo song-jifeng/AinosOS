@@ -32,7 +32,6 @@ from .utils import (
     colorize,
     terminal_width,
     get_home_dir,
-    get_config,
 )
 from .themes import (
     Theme,

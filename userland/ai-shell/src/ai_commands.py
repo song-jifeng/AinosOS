@@ -23,9 +23,9 @@ from .utils import (
     colorize,
     terminal_width,
     truncate,
-    get_config,
     get_env,
 )
+from .config import get_config
 from .ai_assist import (
     AIAssistant,
     AICommand,

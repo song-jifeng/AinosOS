@@ -1,0 +1,72 @@
+name: "Phi-3 Vision"
+description: "Microsoft Phi-3 Vision 4.2B - 多模态视觉语言模型，小参数高效模型"
+version: "3.0.0"
+model_type: "llm"
+architecture: "phi3"
+context_length: 4096
+parameters: "4.2B"
+
+architecture_detail:
+  num_layers: 32
+  num_heads: 32
+  num_kv_heads: 8
+  hidden_size: 3072
+  intermediate_size: 8192
+  vocab_size: 32064
+  norm_type: "rms_norm"
+  activation: "silu"
+  vision_encoder:
+    type: "clip"
+    model: "openai/clip-vit-base-patch32"
+    image_size: 224
+    patch_size: 32
+
+tokenizer:
+  type: "tiktoken"
+  vocab_size: 32064
+
+quantization:
+  - type: "Q8_0"
+    size_gb: 5.0
+  - type: "Q6_K"
+    size_gb: 3.8
+  - type: "Q5_K_M"
+    size_gb: 3.2
+  - type: "Q4_K_M"
+    size_gb: 2.7
+  - type: "Q4_0"
+    size_gb: 2.5
+  - type: "Q3_K_M"
+    size_gb: 2.0
+
+recommended:
+  temperature: 0.3
+  top_p: 0.9
+  max_tokens: 512
+  num_threads: 6
+  batch_size: 32
+  context_size: 2048
+
+special_tokens:
+  bos_token: "<s>"
+  eos_token: "</s>"
+  pad_token: "</s>"
+
+stop_tokens:
+  - "</s>"
+
+required_memory:
+  min_gb: 2.5
+  recommended_gb: 4.0
+  max_gb: 8.0
+
+performance:
+  mmlu: 0.65
+  vqa_score: 0.78
+  textvqa: 0.58
+  tokens_per_second: 90
+
+file_info:
+  format: "gguf"
+  recommended_file: "phi-3-vision-4.2b-q4_k_m.gguf"
+  sha256: "d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7"

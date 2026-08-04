@@ -19,11 +19,11 @@ from collections import Counter, defaultdict
 
 from .utils import (
     AnsiCode,
-    get_config,
     truncate,
     terminal_width,
     find_executable,
 )
+from .config import get_config
 from .config import get_aliases
 from .history import get_history_manager, HistoryEntry
 from .completer import Completion, CompletionResult

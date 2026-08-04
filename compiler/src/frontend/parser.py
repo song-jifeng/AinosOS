@@ -28,9 +28,9 @@ class Parser:
         self.file: str = file
         self.error_reporter: ErrorReporter = error_reporter or ErrorReporter()
         self.pos: int = 0
-        self.current_token: Token = self._next_token()
         self._loop_depth: int = 0  # 记录循环嵌套深度
         self._function_depth: int = 0  # 记录函数嵌套深度
+        self.current_token: Token = self.tokens[0] if self.tokens else Token(TokenType.EOF, None, 0, 0, file)
 
     def parse(self) -> Program:
         """解析完整的程序"""
@@ -969,7 +969,7 @@ class Parser:
         if self.pos < len(self.tokens):
             self.current_token = self.tokens[self.pos]
         else:
-            self.current_token = Token(TokenType.EOF, None, self.line, self.column, self.file)
+            self.current_token = Token(TokenType.EOF, None, token.line, token.column, self.file)
         return token
 
     def _expect(self, token_type: str, context: str = "") -> Token:

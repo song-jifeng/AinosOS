@@ -8,8 +8,8 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
-from ..distance import DistanceMetric, MetricType
-from ..utils.config import IndexConfig
+from distance import DistanceMetric, MetricType
+from utils.config import IndexConfig
 
 
 class BaseIndex(ABC):

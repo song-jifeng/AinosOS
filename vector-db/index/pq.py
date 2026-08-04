@@ -24,8 +24,8 @@ import math
 from typing import Any, Dict, List, Optional, Tuple
 from threading import Lock
 
-from .base import BaseIndex
-from ..utils.config import IndexConfig
+from index.base import BaseIndex
+from utils.config import IndexConfig
 
 
 class PQIndex(BaseIndex):

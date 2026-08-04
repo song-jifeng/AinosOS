@@ -1,0 +1,72 @@
+name: "Yi 1.5 34B"
+description: "01.AI Yi 1.5 34B - 大规模双语优化模型，强大的推理能力"
+version: "1.5.0"
+model_type: "llm"
+architecture: "llama"
+context_length: 4096
+parameters: "34B"
+
+architecture_detail:
+  num_layers: 60
+  num_heads: 56
+  num_kv_heads: 8
+  hidden_size: 7168
+  intermediate_size: 20480
+  vocab_size: 64000
+  rope_theta: 5000000.0
+  norm_type: "rms_norm"
+  activation: "silu"
+
+tokenizer:
+  type: "sentencepiece"
+  vocab_size: 64000
+
+quantization:
+  - type: "Q8_0"
+    size_gb: 36.0
+  - type: "Q6_K"
+    size_gb: 28.0
+  - type: "Q5_K_M"
+    size_gb: 24.0
+  - type: "Q4_K_M"
+    size_gb: 20.0
+  - type: "Q4_K_S"
+    size_gb: 18.5
+  - type: "Q3_K_M"
+    size_gb: 15.0
+  - type: "Q2_K"
+    size_gb: 12.0
+
+recommended:
+  temperature: 0.7
+  top_p: 0.9
+  repeat_penalty: 1.1
+  num_threads: 12
+  batch_size: 32
+  context_size: 4096
+  flash_attention: true
+  gpu_layers: 40
+
+special_tokens:
+  bos_token: "<s>"
+  eos_token: "</s>"
+  pad_token: "<unk>"
+
+stop_tokens:
+  - "</s>"
+
+required_memory:
+  min_gb: 15.0
+  recommended_gb: 24.0
+  max_gb: 40.0
+
+performance:
+  mmlu: 0.77
+  c_eval: 0.85
+  hellaswag: 0.86
+  tokens_per_second: 22
+
+file_info:
+  format: "gguf"
+  recommended_file: "yi-1.5-34b-q4_k_m.gguf"
+  sha256: "b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1"

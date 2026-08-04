@@ -20,11 +20,11 @@ import signal
 from typing import Any, Dict, List, Optional, Set, Tuple
 from queue import Queue, Empty
 
-from .protocol import Protocol, Request, ErrorCode
-from .handler import RequestHandler
-from ..database import VectorDatabase
-from ..utils.config import ServerConfig, global_config
-from ..utils.metrics import MetricsCollector, ThroughputMeter
+from server.protocol import Protocol, Request, ErrorCode
+from server.handler import RequestHandler
+from database import VectorDatabase
+from utils.config import ServerConfig, global_config
+from utils.metrics import MetricsCollector, ThroughputMeter
 
 
 class ClientConnection:

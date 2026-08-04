@@ -155,8 +155,12 @@ def pytest_configure(config: pytest.Config) -> None:
 
 def pytest_collection_modifyitems(config: pytest.Config, items: t.List[pytest.Item]) -> None:
     """Modify test collection to skip slow tests by default."""
-    if not config.getoption("--runslow"):
-        skip_slow = pytest.mark.skip(reason="use --runslow to run")
-        for item in items:
-            if "slow" in item.keywords:
-                item.add_marker(skip_slow)
+    try:
+        if config.getoption("--runslow"):
+            return  # Don't skip slow tests
+    except (ValueError, AttributeError):
+        pass
+    skip_slow = pytest.mark.skip(reason="use --runslow to run")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip_slow)
