@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AinosOS - Dashboard</title>
+<link rel="stylesheet" href="dashboard.css">
+<style>
+  /* Inline critical path styles for fast initial render */
+  .app-layout { display: flex; min-height: 100vh; }
+  .loading-screen {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: #0a0a1a; display: flex; align-items: center; justify-content: center;
+    z-index: 9999; flex-direction: column; gap: 24px;
+    transition: opacity 0.5s ease;
+  }
+  .loading-screen.hidden { opacity: 0; pointer-events: none; }
+  .loading-screen .spinner-lg { width: 48px; height: 48px; border-width: 4px; }
+  .loading-screen p { color: #9e9e9e; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="loading-screen" id="loadingScreen">
+  <div class="spinner spinner-lg"></div>
+  <p>Loading AinosOS Dashboard...</p>
+</div>
+
+<div class="app-layout" id="app">
+  <!-- Sidebar Overlay for Mobile -->
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">A</div>
+      <div>
+        <div class="sidebar-title">AinosOS</div>
+        <div class="sidebar-subtitle">Inference Platform</div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section">
+        <div class="nav-section-title">Navigation</div>
+        <button class="nav-item active" data-page="dashboard" onclick="navigateTo('dashboard')">
+          <span class="nav-icon">&#9632;</span>
+          <span>Dashboard</span>
+        </button>
+        <button class="nav-item" data-page="models" onclick="navigateTo('models')">
+          <span class="nav-icon">&#9881;</span>
+          <span>Models</span>
+        </button>
+        <button class="nav-item" data-page="inference" onclick="navigateTo('inference')">
+          <span class="nav-icon">&#9654;</span>
+          <span>Inference</span>
+        </button>
+        <button class="nav-item" data-page="context" onclick="navigateTo('context')">
+          <span class="nav-icon">&#9776;</span>
+          <span>Context</span>
+          <span class="nav-badge" id="contextBadge">0</span>
+        </button>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-section-title">System</div>
+        <button class="nav-item" data-page="logs" onclick="navigateTo('logs')">
+          <span class="nav-icon">&#9998;</span>
+          <span>Logs</span>
+        </button>
+        <button class="nav-item" data-page="plugins" onclick="navigateTo('plugins')">
+          <span class="nav-icon">&#9881;</span>
+          <span>Plugins</span>
+        </button>
+        <button class="nav-item" data-page="settings" onclick="navigateTo('settings')">
+          <span class="nav-icon">&#9878;</span>
+          <span>Settings</span>
+        </button>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button class="nav-item" onclick="toggleTheme()">
+        <span class="nav-icon">&#9788;</span>
+        <span>Theme</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <button class="menu-toggle" id="menuToggle" onclick="toggleSidebar()" aria-label="Toggle sidebar">&#9776;</button>
+        <div class="status-bar" id="statusBar">
+          <div class="status-item">
+            <span class="status-dot green" id="statusDot"></span>
+            <span class="status-label">System</span>
+            <span class="status-value" id="systemStatus">Online</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">CPU</span>
+            <span class="status-value" id="cpuStatus">0%</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">MEM</span>
+            <span class="status-value" id="memStatus">0%</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">TEMP</span>
+            <span class="status-value" id="tempStatus">0&#176;C</span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Uptime</span>
+            <span class="status-value" id="uptimeStatus">0h</span>
+          </div>
+        </div>
+      </div>
+      <div class="header-right">
+        <button class="btn btn-ghost btn-sm" onclick="refreshAll()" title="Refresh">&#8635;</button>
+      </div>
+    </header>
+
+    <!-- Page Content -->
+    <div class="page-content" id="pageContent">
+      <!-- ===== Dashboard Page ===== -->
+      <div class="page" id="page-dashboard">
+        <div class="page-header">
+          <h1 class="page-title">Dashboard</h1>
+          <p class="page-subtitle">System overview and real-time metrics</p>
+        </div>
+
+        <!-- Stat Cards -->
+        <div class="grid grid-4" id="statCards">
+          <div class="stat-card fade-in-up">
+            <div class="stat-icon blue">&#9881;</div>
+            <div class="stat-value" id="statCpu">0%</div>
+            <div class="stat-label">CPU Usage</div>
+            <div class="stat-change up" id="statCpuChange">+0%</div>
+          </div>
+          <div class="stat-card fade-in-up">
+            <div class="stat-icon green">&#9776;</div>
+            <div class="stat-value" id="statMem">0 GB</div>
+            <div class="stat-label">Memory Used</div>
+            <div class="stat-change up" id="statMemChange">+0 MB</div>
+          </div>
+          <div class="stat-card fade-in-up">
+            <div class="stat-icon red">&#9728;</div>
+            <div class="stat-value" id="statTemp">0&#176;C</div>
+            <div class="stat-label">Temperature</div>
+            <div class="stat-change down" id="statTempChange">0&#176;C</div>
+          </div>
+          <div class="stat-card fade-in-up">
+            <div class="stat-icon yellow">&#9654;</div>
+            <div class="stat-value" id="statUptime">0h</div>
+            <div class="stat-label">Uptime</div>
+            <div class="stat-change up" id="statUptimeChange">Online</div>
+          </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="grid grid-sidebar mt-24">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">CPU Usage Over Time</span>
+            </div>
+            <div class="chart-container large" id="cpuChartContainer">
+              <svg id="cpuChart" viewBox="0 0 600 250" preserveAspectRatio="xMidYMid meet"></svg>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Memory Usage</span>
+            </div>
+            <div class="chart-container large" id="memChartContainer">
+              <svg id="memChart" viewBox="0 0 600 250" preserveAspectRatio="xMidYMid meet"></svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-2 mt-24">
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">Temperature</span>
+            </div>
+            <div class="chart-container large" id="tempChartContainer">
+              <svg id="tempChart" viewBox="0 0 600 250" preserveAspectRatio="xMidYMid meet"></svg>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <span class="card-title">System Info</span>
+            </div>
+            <div class="card-body" id="systemInfo">
+              <div class="settings-item"><span class="settings-item-label">Hostname</span><span class="text-mono text-sm" id="sysHostname">-</span></div>
+              <div class="settings-item"><span class="settings-item-label">OS</span><span class="text-mono text-sm" id="sysOS">-</span></div>
+              <div class="settings-item"><span class="settings-item-label">Kernel</span><span class="text-mono text-sm" id="sysKernel">-</span></div>
+              <div class="settings-item"><span class="settings-item-label">CPU Cores</span><span class="text-mono text-sm" id="sysCores">-</span></div>
+              <div class="settings-item"><span class="settings-item-label">Total Memory</span><span class="text-mono text-sm" id="sysTotalMem">-</span></div>
+              <div class="settings-item"><span class="settings-item-label">Disk Usage</span><span class="text-mono text-sm" id="sysDisk">-</span></div>
+              <div class="settings-item"><span class="settings-item-label">Python Version</span><span class="text-mono text-sm" id="sysPython">-</span></div>
+              <div class="settings-item"><span class="settings-item-label">Ainos Version</span><span class="text-mono text-sm" id="sysVersion">-</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Active Models -->
+        <div class="card mt-24">
+          <div class="card-header">
+            <span class="card-title">Active Models</span>
+            <button class="btn btn-sm btn-primary" onclick="navigateTo('models')">Manage Models</button>
+          </div>
+          <div class="table-container" id="activeModelsTable">
+            <table>
+              <thead>
+                <tr>
+                  <th>Model ID</th>
+                  <th>Name</th>
+                  <th>Status</th>
+                  <th>VRAM</th>
+                  <th>Uptime</th>
+                  <th>Requests</th>
+                </tr>
+              </thead>
+              <tbody id="activeModelsBody">
+                <tr><td colspan="6" class="text-center text-muted">No models loaded</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Models Page ===== -->
+      <div class="page hidden" id="page-models">
+        <div class="page-header">
+          <h1 class="page-title">Models</h1>
+          <p class="page-subtitle">Manage and monitor loaded models</p>
+        </div>
+
+        <div class="filters-bar">
+          <input type="text" class="form-input" placeholder="Search models..." id="modelSearch" oninput="filterModels()">
+          <select class="form-select" id="modelStatusFilter" onchange="filterModels()">
+            <option value="all">All Status</option>
+            <option value="loaded">Loaded</option>
+            <option value="unloaded">Unloaded</option>
+            <option value="error">Error</option>
+          </select>
+          <button class="btn btn-primary" onclick="refreshModels()">&#8635; Refresh</button>
+          <button class="btn btn-success" onclick="showLoadModelModal()">+ Load Model</button>
+        </div>
+
+        <div class="card">
+          <div class="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Model ID</th>
+                  <th>Name</th>
+                  <th>Provider</th>
+                  <th>Status</th>
+                  <th>VRAM Usage</th>
+                  <th>Context Length</th>
+                  <th>Requests</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="modelsTableBody">
+                <tr><td colspan="8" class="text-center text-muted">Loading models...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Inference Page ===== -->
+      <div class="page hidden" id="page-inference">
+        <div class="page-header">
+          <h1 class="page-title">Inference Playground</h1>
+          <p class="page-subtitle">Test and experiment with model inference</p>
+        </div>
+
+        <div class="card mb-24">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Model</label>
+              <select class="form-select" id="inferenceModel">
+                <option value="">-- Select a model --</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Max Tokens</label>
+              <input type="number" class="form-input" id="inferenceMaxTokens" value="1024" min="1" max="8192">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Temperature</label>
+              <input type="number" class="form-input" id="inferenceTemperature" value="0.7" min="0" max="2" step="0.1">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Stream</label>
+              <label class="form-checkbox" style="margin-top: 28px;">
+                <input type="checkbox" id="inferenceStream" checked>
+                <span>Enable streaming</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="playground">
+          <div class="playground-input">
+            <div class="card" style="flex:1;display:flex;flex-direction:column;">
+              <div class="card-header">
+                <span class="card-title">Input</span>
+                <button class="btn btn-sm btn-ghost" onclick="clearPrompt()">Clear</button>
+              </div>
+              <div class="form-group" style="flex:1;display:flex;flex-direction:column;">
+                <textarea class="form-textarea" id="promptInput" placeholder="Enter your prompt here..." style="flex:1;min-height:200px;">Hello! What can you do?</textarea>
+              </div>
+              <div class="card-footer">
+                <button class="btn btn-primary btn-lg btn-block" id="inferenceBtn" onclick="runInference()">&#9654; Run Inference</button>
+                <button class="btn btn-danger btn-lg btn-block hidden" id="stopInferenceBtn" onclick="stopInference()">&#9632; Stop</button>
+              </div>
+            </div>
+          </div>
+          <div class="playground-output">
+            <div class="card" style="flex:1;display:flex;flex-direction:column;">
+              <div class="card-header">
+                <span class="card-title">Response</span>
+                <div class="card-actions">
+                  <span class="text-sm text-muted" id="tokenCount">Tokens: 0</span>
+                  <button class="btn btn-sm btn-ghost" onclick="copyResponse()">Copy</button>
+                  <button class="btn btn-sm btn-ghost" onclick="clearResponse()">Clear</button>
+                </div>
+              </div>
+              <div class="response-area" id="responseArea">Response will appear here...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Context Page ===== -->
+      <div class="page hidden" id="page-context">
+        <div class="page-header">
+          <h1 class="page-title">Context Browser</h1>
+          <p class="page-subtitle">View and manage conversation context</p>
+        </div>
+
+        <div class="filters-bar">
+          <input type="text" class="form-input" placeholder="Search context..." id="contextSearch" oninput="filterContext()">
+          <button class="btn btn-primary" onclick="refreshContext()">&#8635; Refresh</button>
+          <button class="btn btn-danger" onclick="clearAllContext()">Clear All</button>
+        </div>
+
+        <div class="grid grid-2" id="contextList">
+          <div class="empty-state" style="grid-column: 1/-1;">
+            <div class="empty-state-icon">&#9776;</div>
+            <div class="empty-state-title">No Context Entries</div>
+            <div class="empty-state-text">Conversation context will appear here after running inference.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Logs Page ===== -->
+      <div class="page hidden" id="page-logs">
+        <div class="page-header">
+          <h1 class="page-title">Log Viewer</h1>
+          <p class="page-subtitle">Monitor system logs in real-time</p>
+        </div>
+
+        <div class="filters-bar">
+          <select class="form-select" id="logLevel" onchange="filterLogs()">
+            <option value="all">All Levels</option>
+            <option value="info">INFO</option>
+            <option value="warn">WARN</option>
+            <option value="error">ERROR</option>
+            <option value="debug">DEBUG</option>
+          </select>
+          <input type="text" class="form-input" placeholder="Search logs..." id="logSearch" oninput="filterLogs()" style="flex:1;">
+          <label class="form-checkbox" style="white-space:nowrap;">
+            <input type="checkbox" id="autoRefreshLogs" checked onchange="toggleLogAutoRefresh()">
+            <span>Auto-refresh</span>
+          </label>
+          <button class="btn btn-primary" onclick="refreshLogs()">&#8635; Refresh</button>
+          <button class="btn btn-ghost" onclick="clearLogs()">Clear</button>
+        </div>
+
+        <div class="card">
+          <div class="log-viewer" id="logViewer">
+            <div class="text-center text-muted" style="padding: 24px;">Loading logs...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Plugins Page ===== -->
+      <div class="page hidden" id="page-plugins">
+        <div class="page-header">
+          <h1 class="page-title">Plugins</h1>
+          <p class="page-subtitle">Manage system plugins and extensions</p>
+        </div>
+
+        <div class="filters-bar">
+          <input type="text" class="form-input" placeholder="Search plugins..." id="pluginSearch" oninput="filterPlugins()">
+          <select class="form-select" id="pluginStatusFilter" onchange="filterPlugins()">
+            <option value="all">All</option>
+            <option value="enabled">Enabled</option>
+            <option value="disabled">Disabled</option>
+          </select>
+          <button class="btn btn-primary" onclick="refreshPlugins()">&#8635; Refresh</button>
+        </div>
+
+        <div class="grid grid-auto" id="pluginList">
+          <div class="empty-state" style="grid-column: 1/-1;">
+            <div class="empty-state-icon">&#9881;</div>
+            <div class="empty-state-title">No Plugins</div>
+            <div class="empty-state-text">No plugins are currently available.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== Settings Page ===== -->
+      <div class="page hidden" id="page-settings">
+        <div class="page-header">
+          <h1 class="page-title">Settings</h1>
+          <p class="page-subtitle">Configure system parameters</p>
+        </div>
+
+        <div class="grid grid-sidebar">
+          <div>
+            <!-- General Settings -->
+            <div class="card mb-24">
+              <div class="settings-section">
+                <div class="settings-section-title">General</div>
+                <div class="settings-item">
+                  <div>
+                    <div class="settings-item-label">Dashboard Auto-refresh</div>
+                    <div class="settings-item-description">Automatically refresh dashboard data</div>
+                  </div>
+                  <label class="toggle">
+                    <input type="checkbox" id="settingAutoRefresh" checked onchange="saveSettings()">
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+                <div class="settings-item">
+                  <div>
+                    <div class="settings-item-label">Refresh Interval (seconds)</div>
+                    <div class="settings-item-description">How often to refresh dashboard data</div>
+                  </div>
+                  <input type="number" class="form-input" style="width:100px;" id="settingRefreshInterval" value="5" min="1" max="60" onchange="saveSettings()">
+                </div>
+                <div class="settings-item">
+                  <div>
+                    <div class="settings-item-label">CPU Alert Threshold</div>
+                    <div class="settings-item-description">Trigger alert when CPU exceeds this percentage</div>
+                  </div>
+                  <input type="number" class="form-input" style="width:100px;" id="settingCpuThreshold" value="90" min="1" max="100" onchange="saveSettings()">
+                </div>
+                <div class="settings-item">
+                  <div>
+                    <div class="settings-item-label">Temperature Alert Threshold</div>
+                    <div class="settings-item-description">Trigger alert when temperature exceeds this value</div>
+                  </div>
+                  <input type="number" class="form-input" style="width:100px;" id="settingTempThreshold" value="80" min="1" max="120" onchange="saveSettings()">
+                </div>
+              </div>
+            </div>
+
+            <!-- Inference Settings -->
+            <div class="card mb-24">
+              <div class="settings-section">
+                <div class="settings-section-title">Inference</div>
+                <div class="settings-item">
+                  <div>
+                    <div class="settings-item-label">Default Max Tokens</div>
+                    <div class="settings-item-description">Default maximum tokens for inference</div>
+                  </div>
+                  <input type="number" class="form-input" style="width:100px;" id="settingDefaultMaxTokens" value="1024" min="1" max="8192" onchange="saveSettings()">
+                </div>
+                <div class="settings-item">
+                  <div>
+                    <div class="settings-item-label">Default Temperature</div>
+                    <div class="settings-item-description">Default temperature for inference</div>
+                  </div>
+                  <input type="number" class="form-input" style="width:100px;" id="settingDefaultTemp" value="0.7" min="0" max="2" step="0.1" onchange="saveSettings()">
+                </div>
+                <div class="settings-item">
+                  <div>
+                    <div class="settings-item-label">Streaming Enabled</div>
+                    <div class="settings-item-description">Enable streaming by default</div>
+                  </div>
+                  <label class="toggle">
+                    <input type="checkbox" id="settingStreaming" checked onchange="saveSettings()">
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Logging Settings -->
+            <div class="card">
+              <div class="settings-section">
+                <div class="settings-section-title">Logging</div>
+                <div class="settings-item">
+                  <div>
+                    <div class="settings-item-label">Log Level</div>
+                    <div class="settings-item-description">Minimum log level to display</div>
+                  </div>
+                  <select class="form-select" style="width:120px;" id="settingLogLevel" onchange="saveSettings()">
+                    <option value="debug">DEBUG</option>
+                    <option value="info" selected>INFO</option>
+                    <option value="warn">WARN</option>
+                    <option value="error">ERROR</option>
+                  </select>
+                </div>
+                <div class="settings-item">
+                  <div>
+                    <div class="settings-item-label">Max Log Entries</div>
+                    <div class="settings-item-description">Maximum number of log entries to keep</div>
+                  </div>
+                  <input type="number" class="form-input" style="width:100px;" id="settingMaxLogs" value="500" min="50" max="5000" onchange="saveSettings()">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="card mb-24">
+              <div class="card-header">
+                <span class="card-title">API Configuration</span>
+              </div>
+              <div class="card-body">
+                <div class="form-group">
+                  <label class="form-label">API Base URL</label>
+                  <input type="text" class="form-input" id="settingApiUrl" value="http://localhost:8080" onchange="saveSettings()">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">API Token</label>
+                  <input type="password" class="form-input" id="settingApiToken" placeholder="Enter API token..." onchange="saveSettings()">
+                </div>
+                <button class="btn btn-primary" onclick="testConnection()">Test Connection</button>
+                <span id="connectionTestResult" class="text-sm text-muted ml-8"></span>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <span class="card-title">About</span>
+              </div>
+              <div class="card-body">
+                <div class="settings-item"><span class="settings-item-label">AinosOS Version</span><span class="text-mono text-sm" id="aboutVersion">1.0.0</span></div>
+                <div class="settings-item"><span class="settings-item-label">Dashboard Version</span><span class="text-mono text-sm">1.0.0</span></div>
+                <div class="settings-item"><span class="settings-item-label">Build Time</span><span class="text-mono text-sm" id="aboutBuildTime">-</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal" id="modalContent">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modalTitle">Modal</h2>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modalBody">
+      <!-- Dynamic content -->
+    </div>
+    <div class="modal-footer" id="modalFooter" style="display:flex;justify-content:flex-end;gap:8px;margin-top:24px;padding-top:16px;border-top:1px solid var(--border);">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="modalConfirmBtn" onclick="modalConfirm()">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="dashboard.js"></script>
+</body>
+</html>

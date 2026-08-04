@@ -1,0 +1,202 @@
+# ============================================================
+# Model Configuration
+# ============================================================
+model:
+  name: "Mistral 7B"
+  family: "mistral"
+  architecture: "decoder-only"
+  version: "1.0"
+  description: "Mistral 7B large language model with grouped-query attention and sliding window attention"
+
+# ============================================================
+# Source Information
+# ============================================================
+source:
+  huggingface_repo: "mistralai/Mistral-7B-v0.1"
+  default_branch: "main"
+  license: "apache-2.0"
+  paper_url: "https://arxiv.org/abs/2310.06825"
+  author: "Mistral AI"
+
+# ============================================================
+# Architecture Details
+# ============================================================
+architecture:
+  num_layers: 32
+  num_attention_heads: 32
+  num_kv_heads: 8
+  hidden_size: 4096
+  intermediate_size: 14336
+  vocab_size: 32000
+  max_position_embeddings: 32768
+  normalization: "RMSNorm"
+  activation_function: "SiLU"
+  attention_type: "grouped-query-attention"
+  positional_encoding: "RoPE"
+  feed_forward: "SwiGLU"
+  embedding_dim: 4096
+  head_dim: 128
+  rope_theta: 10000.0
+  rope_scaling: null
+  tie_word_embeddings: false
+  weight_tying: false
+
+# ============================================================
+# Model Dimensions
+# ============================================================
+dimensions:
+  total_params: "7.3B"
+  non_embedding_params: "7.0B"
+  embedding_params: "0.3B"
+  model_size_gb: 14.5
+  quantized_sizes:
+    q4_0: 4.3
+    q4_1: 4.8
+    q5_0: 5.3
+    q5_1: 5.8
+    q8_0: 7.5
+    f16: 14.5
+
+# ============================================================
+# Default Quantization
+# ============================================================
+quantization:
+  default: "Q4_0"
+  supported:
+    - "Q4_0"
+    - "Q4_1"
+    - "Q5_0"
+    - "Q5_1"
+    - "Q8_0"
+    - "F16"
+  recommended: "Q5_0"
+  performance_rank:
+    Q4_0: "fastest, lowest quality"
+    Q4_1: "slightly better quality than Q4_0"
+    Q5_0: "good balance of quality and speed"
+    Q5_1: "better quality than Q5_0"
+    Q8_0: "near-lossless"
+    F16: "lossless"
+
+# ============================================================
+# Recommended Parameters
+# ============================================================
+parameters:
+  inference:
+    temperature: 0.7
+    top_p: 0.9
+    top_k: 40
+    repetition_penalty: 1.1
+    max_tokens: 2048
+    stop_sequences: []
+  context_length: 8192
+  batch_size: 1
+  threads: 4
+  gpu_layers: 0
+
+# ============================================================
+# Memory Requirements
+# ============================================================
+memory:
+  minimum_ram_gb: 8
+  recommended_ram_gb: 16
+  minimum_vram_gb: 6
+  recommended_vram_gb: 12
+  swap_gb: 4
+  disk_space_gb: 22
+  breakdown:
+    model_weights_gb: 14.5
+    kv_cache_gb: 2.0
+    overhead_gb: 1.5
+
+# ============================================================
+# Performance Benchmarks
+# ============================================================
+benchmarks:
+  inference_speed:
+    cpu:
+      q4_0: { tokens_per_second: 28, prompt_processing: "4.5s for 512 tokens" }
+      q8_0: { tokens_per_second: 17, prompt_processing: "7s for 512 tokens" }
+      f16: { tokens_per_second: 9, prompt_processing: "14s for 512 tokens" }
+    gpu:
+      q4_0: { tokens_per_second: 85, prompt_processing: "0.9s for 512 tokens" }
+      q8_0: { tokens_per_second: 65, prompt_processing: "1.3s for 512 tokens" }
+      f16: { tokens_per_second: 48, prompt_processing: "1.8s for 512 tokens" }
+  memory_usage:
+    cpu:
+      q4_0: { peak_ram_gb: 6, steady_ram_gb: 4.5 }
+      q8_0: { peak_ram_gb: 9.5, steady_ram_gb: 7.5 }
+      f16: { peak_ram_gb: 17, steady_ram_gb: 14.5 }
+    gpu:
+      q4_0: { peak_vram_gb: 5, peak_ram_gb: 2 }
+      q8_0: { peak_vram_gb: 8, peak_ram_gb: 2 }
+      f16: { peak_vram_gb: 15, peak_ram_gb: 2 }
+
+# ============================================================
+# Conversion Options
+# ============================================================
+conversion:
+  supported_formats:
+    - "gguf"
+    - "onnx"
+  default_format: "gguf"
+  quantization_types:
+    - "q4_0"
+    - "q4_1"
+    - "q5_0"
+    - "q5_1"
+    - "q8_0"
+    - "f16"
+  optimization_options:
+    fuse_attention: true
+    fuse_ffn: true
+    prune_unused: false
+  gguf_metadata:
+    model_type: "mistral"
+    file_version: 3
+    tensor_data_layout: "default"
+
+# ============================================================
+# Hardware Requirements
+# ============================================================
+hardware:
+  minimum:
+    cpu: "x86_64, 4 cores"
+    ram: "8 GB"
+    disk: "SSD, 22 GB free"
+  recommended:
+    cpu: "x86_64, 8 cores with AVX2"
+    ram: "16 GB"
+    gpu: "NVIDIA RTX 3060 12GB or better"
+    disk: "NVMe SSD, 50 GB free"
+  supported_backends:
+    - "cpu"
+    - "cuda"
+    - "vulkan"
+    - "metal"
+
+# ============================================================
+# Dependencies
+# ============================================================
+dependencies:
+  required:
+    - "torch>=2.0.0"
+    - "numpy>=1.24.0"
+    - "safetensors>=0.3.0"
+  optional:
+    - "xformers>=0.0.20"
+    - "flash-attn>=2.0.0"
+    - "transformers>=4.30.0"
+    - "accelerate>=0.20.0"
+
+# ============================================================
+# Registry Metadata
+# ============================================================
+registry:
+  tags: ["llm", "text-generation", "mistral"]
+  category: "text-generation"
+  tasks: ["text-generation", "conversational"]
+  languages: ["en", "fr", "de", "it", "es"]
+  featured: true
+  created: "2023-09-27"
+  updated: "2024-06-01"

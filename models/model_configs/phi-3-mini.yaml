@@ -1,0 +1,202 @@
+# ============================================================
+# Model Configuration
+# ============================================================
+model:
+  name: "Phi-3 Mini"
+  family: "phi"
+  architecture: "decoder-only"
+  version: "3.0"
+  description: "Microsoft's Phi-3 Mini 3.8B small language model with exceptional performance for its size"
+
+# ============================================================
+# Source Information
+# ============================================================
+source:
+  huggingface_repo: "microsoft/Phi-3-mini-4k-instruct"
+  default_branch: "main"
+  license: "mit"
+  paper_url: "https://arxiv.org/abs/2404.14219"
+  author: "Microsoft Research"
+
+# ============================================================
+# Architecture Details
+# ============================================================
+architecture:
+  num_layers: 32
+  num_attention_heads: 32
+  num_kv_heads: 32
+  hidden_size: 3072
+  intermediate_size: 8192
+  vocab_size: 32064
+  max_position_embeddings: 4096
+  normalization: "RMSNorm"
+  activation_function: "SiLU"
+  attention_type: "multi-head-attention"
+  positional_encoding: "RoPE"
+  feed_forward: "SwiGLU"
+  embedding_dim: 3072
+  head_dim: 96
+  rope_theta: 10000.0
+  rope_scaling: null
+  tie_word_embeddings: false
+  weight_tying: false
+
+# ============================================================
+# Model Dimensions
+# ============================================================
+dimensions:
+  total_params: "3.8B"
+  non_embedding_params: "3.6B"
+  embedding_params: "0.2B"
+  model_size_gb: 7.6
+  quantized_sizes:
+    q4_0: 2.3
+    q4_1: 2.5
+    q5_0: 2.8
+    q5_1: 3.0
+    q8_0: 3.9
+    f16: 7.6
+
+# ============================================================
+# Default Quantization
+# ============================================================
+quantization:
+  default: "Q4_0"
+  supported:
+    - "Q4_0"
+    - "Q4_1"
+    - "Q5_0"
+    - "Q5_1"
+    - "Q8_0"
+    - "F16"
+  recommended: "Q4_0"
+  performance_rank:
+    Q4_0: "fastest, lowest quality"
+    Q4_1: "slightly better quality than Q4_0"
+    Q5_0: "good balance of quality and speed"
+    Q5_1: "better quality than Q5_0"
+    Q8_0: "near-lossless"
+    F16: "lossless"
+
+# ============================================================
+# Recommended Parameters
+# ============================================================
+parameters:
+  inference:
+    temperature: 0.7
+    top_p: 0.9
+    top_k: 40
+    repetition_penalty: 1.1
+    max_tokens: 2048
+    stop_sequences: []
+  context_length: 4096
+  batch_size: 1
+  threads: 4
+  gpu_layers: 0
+
+# ============================================================
+# Memory Requirements
+# ============================================================
+memory:
+  minimum_ram_gb: 4
+  recommended_ram_gb: 8
+  minimum_vram_gb: 4
+  recommended_vram_gb: 8
+  swap_gb: 2
+  disk_space_gb: 12
+  breakdown:
+    model_weights_gb: 7.6
+    kv_cache_gb: 1.0
+    overhead_gb: 1.0
+
+# ============================================================
+# Performance Benchmarks
+# ============================================================
+benchmarks:
+  inference_speed:
+    cpu:
+      q4_0: { tokens_per_second: 38, prompt_processing: "3s for 512 tokens" }
+      q8_0: { tokens_per_second: 24, prompt_processing: "5s for 512 tokens" }
+      f16: { tokens_per_second: 12, prompt_processing: "10s for 512 tokens" }
+    gpu:
+      q4_0: { tokens_per_second: 110, prompt_processing: "0.6s for 512 tokens" }
+      q8_0: { tokens_per_second: 80, prompt_processing: "0.9s for 512 tokens" }
+      f16: { tokens_per_second: 55, prompt_processing: "1.5s for 512 tokens" }
+  memory_usage:
+    cpu:
+      q4_0: { peak_ram_gb: 3.5, steady_ram_gb: 2.5 }
+      q8_0: { peak_ram_gb: 5, steady_ram_gb: 4 }
+      f16: { peak_ram_gb: 9, steady_ram_gb: 7.6 }
+    gpu:
+      q4_0: { peak_vram_gb: 3, peak_ram_gb: 1.5 }
+      q8_0: { peak_vram_gb: 5, peak_ram_gb: 1.5 }
+      f16: { peak_vram_gb: 8, peak_ram_gb: 1.5 }
+
+# ============================================================
+# Conversion Options
+# ============================================================
+conversion:
+  supported_formats:
+    - "gguf"
+    - "onnx"
+  default_format: "gguf"
+  quantization_types:
+    - "q4_0"
+    - "q4_1"
+    - "q5_0"
+    - "q5_1"
+    - "q8_0"
+    - "f16"
+  optimization_options:
+    fuse_attention: true
+    fuse_ffn: true
+    prune_unused: false
+  gguf_metadata:
+    model_type: "phi"
+    file_version: 3
+    tensor_data_layout: "default"
+
+# ============================================================
+# Hardware Requirements
+# ============================================================
+hardware:
+  minimum:
+    cpu: "x86_64, 4 cores"
+    ram: "4 GB"
+    disk: "SSD, 12 GB free"
+  recommended:
+    cpu: "x86_64, 8 cores with AVX2"
+    ram: "8 GB"
+    gpu: "NVIDIA RTX 3060 12GB or better"
+    disk: "NVMe SSD, 20 GB free"
+  supported_backends:
+    - "cpu"
+    - "cuda"
+    - "vulkan"
+    - "metal"
+
+# ============================================================
+# Dependencies
+# ============================================================
+dependencies:
+  required:
+    - "torch>=2.0.0"
+    - "numpy>=1.24.0"
+    - "safetensors>=0.3.0"
+  optional:
+    - "xformers>=0.0.20"
+    - "flash-attn>=2.0.0"
+    - "transformers>=4.40.0"
+    - "accelerate>=0.20.0"
+
+# ============================================================
+# Registry Metadata
+# ============================================================
+registry:
+  tags: ["llm", "text-generation", "phi"]
+  category: "text-generation"
+  tasks: ["text-generation", "conversational"]
+  languages: ["en"]
+  featured: true
+  created: "2024-04-23"
+  updated: "2024-06-01"

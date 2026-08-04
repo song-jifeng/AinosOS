@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		Ainos AI Daemon launchd service definition.
+		Install: sudo cp com.ainos.daemon.plist /Library/LaunchDaemons/
+		Load:    sudo launchctl load /Library/LaunchDaemons/com.ainos.daemon.plist
+		Unload:  sudo launchctl unload /Library/LaunchDaemons/com.ainos.daemon.plist
+		Start:   sudo launchctl start com.ainos.daemon
+		Stop:    sudo launchctl stop com.ainos.daemon
+	-->
+
+	<key>Label</key>
+	<string>com.ainos.daemon</string>
+
+	<key>ServiceDescription</key>
+	<string>Ainos AI System Daemon – Core AI service manager for Ainos OS</string>
+
+	<!--
+		MachServices registers an XPC service endpoint.
+		Client applications with the matching entitlement can connect.
+	-->
+	<key>MachServices</key>
+	<dict>
+		<key>com.ainos.daemon.xpc</key>
+		<true/>
+		<key>com.ainos.thermal</key>
+		<true/>
+	</dict>
+
+	<key>Program</key>
+	<string>/usr/local/lib/ainos/ai-daemon</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/lib/ainos/ai-daemon</string>
+		<string>--config</string>
+		<string>/etc/ainos/ai-daemon.conf</string>
+	</array>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<!--
+		KeepAlive ensures the daemon is restarted if it crashes.
+		Using "SuccessfulExitOnly" avoids restarting on intentional stop.
+	-->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExitOnly</key>
+		<false/>
+		<key>NetworkState</key>
+		<false/>
+	</dict>
+
+	<!--
+		WatchPaths triggers a restart (via KeepAlive) when config files change.
+	-->
+	<key>WatchPaths</key>
+	<array>
+		<string>/etc/ainos/ai-daemon.conf</string>
+		<string>/etc/ainos/ai-daemon.toml</string>
+		<string>/usr/local/lib/ainos/models</string>
+		<string>/usr/local/etc/ainos/</string>
+	</array>
+
+	<!--
+		QueueDirectories watches for pending work.
+	-->
+	<key>QueueDirectories</key>
+	<array>
+		<string>/var/spool/ainos</string>
+		<string>/var/db/ainos/pending</string>
+	</array>
+
+	<!-- Standard I/O paths for logging -->
+	<key>StandardOutPath</key>
+	<string>/var/log/ainos/daemon-stdout.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>/var/log/ainos/daemon-stderr.log</string>
+
+	<!--
+		Environment variables passed to the daemon process.
+		AINOS_HOME overrides the default data directory.
+		RUST_LOG controls tracing/log verbosity.
+	-->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>AINOS_HOME</key>
+		<string>/usr/local/lib/ainos</string>
+		<key>RUST_LOG</key>
+		<string>info,ainos=debug</string>
+		<key>AINOS_MACOS_XPC</key>
+		<string>1</string>
+		<key>AINOS_USE_LAUNCHD_SOCKETS</key>
+		<string>1</string>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+
+	<!--
+		Working directory for the daemon process.
+	-->
+	<key>WorkingDirectory</key>
+	<string>/usr/local/lib/ainos</string>
+
+	<!--
+		User and group to run as.
+		Run as root for access to IOKit thermal sensors and XPC services.
+	-->
+	<key>UserName</key>
+	<string>root</string>
+	<key>GroupName</key>
+	<string>wheel</key>
+
+	<!--
+		Hard resource limits.
+	-->
+	<key>HardResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>65536</integer>
+		<key>NumberOfProcesses</key>
+		<integer>4096</integer>
+	</dict>
+
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>16384</integer>
+		<key>NumberOfProcesses</key>
+		<integer>1024</integer>
+	</dict>
+
+	<!--
+		ThrottleInterval prevents rapid restart loops.
+		If the daemon crashes more than once in 10 seconds, launchd waits.
+	-->
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+
+	<!--
+		Enable crash reporting via CrashReporter.
+	-->
+	<key>EnableTransactions</key>
+	<true/>
+
+	<!--
+		Send SIGTERM for graceful shutdown, wait 30s, then SIGKILL.
+	-->
+	<key>ExitTimeOut</key>
+	<integer>30</integer>
+
+	<!--
+		Send SIGKILL if the daemon is unresponsive during shutdown.
+	-->
+	<key>AbandonProcessGroup</key>
+	<true/>
+
+	<!--
+		Expose the daemon socket via launchd's socket activation.
+		launchd creates and passes the listening file descriptor,
+		eliminating the need for the daemon to bind manually.
+	-->
+	<key>Sockets</key>
+	<dict>
+		<key>Listener</key>
+		<dict>
+			<key>SockServiceName</key>
+			<string>ainos</string>
+			<key>SockType</key>
+			<string>stream</string>
+			<key>SockFamily</key>
+			<string>IPv4</string>
+			<key>SockNodeName</key>
+			<string>127.0.0.1</string>
+			<key>SockPort</key>
+			<integer>9500</integer>
+		</dict>
+	</dict>
+
+	<!--
+		Entitlements required by the daemon process.
+	-->
+	<key>ProcessType</key>
+	<string>Interactive</string>
+
+	<!--
+		Security sandbox settings (app sandbox is not used for daemons).
+	-->
+	<key>EnablePressuredExit</key>
+	<false/>
+
+	<key>EnableGPU</key>
+	<false/>
+</dict>
+</plist>

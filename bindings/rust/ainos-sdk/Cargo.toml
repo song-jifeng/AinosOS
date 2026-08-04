@@ -1,0 +1,45 @@
+[package]
+name = "ainos-sdk"
+version = "0.1.0"
+description = "Rust SDK for the Ainos AI Daemon — connect, infer, and manage models over TCP/IP"
+edition = "2021"
+authors = ["AinosOS Contributors"]
+license = "MIT"
+repository = "https://github.com/ainos-os/ainos"
+homepage = "https://ainos.io"
+keywords = ["ainos", "ai", "llm", "sdk", "ipc"]
+categories = ["api-bindings", "development-tools::ffi"]
+
+[features]
+default = ["full"]
+full = ["streaming", "tls", "mock"]
+streaming = []
+tls = ["tokio-native-tls", "native-tls"]
+mock = []
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio-util = "0.7"
+futures = "0.3"
+tokio-stream = "0.1"
+tokio-native-tls = { version = "0.3", optional = true }
+native-tls = { version = "0.2", optional = true }
+zeroize = { version = "1", features = ["derive"] }
+bytes = "1"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+pin-project-lite = "0.2"
+async-trait = "0.1"
+
+[dev-dependencies]
+anyhow = "1"
+tokio-test = "0.4"
+pretty_assertions = "1"
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"

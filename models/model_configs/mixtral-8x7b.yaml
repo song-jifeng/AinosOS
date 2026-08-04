@@ -1,0 +1,208 @@
+# ============================================================
+# Model Configuration
+# ============================================================
+model:
+  name: "Mixtral 8x7B"
+  family: "mixtral"
+  architecture: "decoder-only"
+  version: "1.0"
+  description: "Mistral's Mixtral 8x7B mixture of experts model with 46.7B total parameters, 12.9B active per token"
+
+# ============================================================
+# Source Information
+# ============================================================
+source:
+  huggingface_repo: "mistralai/Mixtral-8x7B-v0.1"
+  default_branch: "main"
+  license: "apache-2.0"
+  paper_url: "https://arxiv.org/abs/2401.04088"
+  author: "Mistral AI"
+
+# ============================================================
+# Architecture Details
+# ============================================================
+architecture:
+  num_layers: 32
+  num_attention_heads: 32
+  num_kv_heads: 8
+  hidden_size: 4096
+  intermediate_size: 14336
+  vocab_size: 32000
+  max_position_embeddings: 32768
+  normalization: "RMSNorm"
+  activation_function: "SiLU"
+  attention_type: "grouped-query-attention"
+  positional_encoding: "RoPE"
+  feed_forward: "SwiGLU"
+  embedding_dim: 4096
+  head_dim: 128
+  rope_theta: 10000.0
+  rope_scaling: null
+  tie_word_embeddings: false
+  weight_tying: false
+  moe:
+    num_experts: 8
+    top_k_experts: 2
+    expert_hidden_size: 14336
+    shared_expert_intermediate_size: 14336
+    router_jitter_noise: 0.0
+
+# ============================================================
+# Model Dimensions
+# ============================================================
+dimensions:
+  total_params: "46.7B"
+  non_embedding_params: "46.4B"
+  embedding_params: "0.3B"
+  model_size_gb: 93.4
+  quantized_sizes:
+    q4_0: 28.0
+    q4_1: 31.0
+    q5_0: 34.0
+    q5_1: 37.0
+    q8_0: 48.0
+    f16: 93.4
+
+# ============================================================
+# Default Quantization
+# ============================================================
+quantization:
+  default: "Q4_0"
+  supported:
+    - "Q4_0"
+    - "Q4_1"
+    - "Q5_0"
+    - "Q5_1"
+    - "Q8_0"
+    - "F16"
+  recommended: "Q4_0"
+  performance_rank:
+    Q4_0: "fastest, lowest quality"
+    Q4_1: "slightly better quality than Q4_0"
+    Q5_0: "good balance of quality and speed"
+    Q5_1: "better quality than Q5_0"
+    Q8_0: "near-lossless"
+    F16: "lossless"
+
+# ============================================================
+# Recommended Parameters
+# ============================================================
+parameters:
+  inference:
+    temperature: 0.7
+    top_p: 0.9
+    top_k: 40
+    repetition_penalty: 1.1
+    max_tokens: 2048
+    stop_sequences: []
+  context_length: 32768
+  batch_size: 1
+  threads: 8
+  gpu_layers: 0
+
+# ============================================================
+# Memory Requirements
+# ============================================================
+memory:
+  minimum_ram_gb: 32
+  recommended_ram_gb: 48
+  minimum_vram_gb: 16
+  recommended_vram_gb: 32
+  swap_gb: 16
+  disk_space_gb: 60
+  breakdown:
+    model_weights_gb: 93.4
+    kv_cache_gb: 8.0
+    overhead_gb: 4.0
+
+# ============================================================
+# Performance Benchmarks
+# ============================================================
+benchmarks:
+  inference_speed:
+    cpu:
+      q4_0: { tokens_per_second: 8, prompt_processing: "20s for 512 tokens" }
+      q8_0: { tokens_per_second: 5, prompt_processing: "35s for 512 tokens" }
+      f16: { tokens_per_second: 2, prompt_processing: "70s for 512 tokens" }
+    gpu:
+      q4_0: { tokens_per_second: 40, prompt_processing: "3s for 512 tokens" }
+      q8_0: { tokens_per_second: 28, prompt_processing: "5s for 512 tokens" }
+      f16: { tokens_per_second: 18, prompt_processing: "8s for 512 tokens" }
+  memory_usage:
+    cpu:
+      q4_0: { peak_ram_gb: 32, steady_ram_gb: 28 }
+      q8_0: { peak_ram_gb: 52, steady_ram_gb: 48 }
+      f16: { peak_ram_gb: 98, steady_ram_gb: 93 }
+    gpu:
+      q4_0: { peak_vram_gb: 30, peak_ram_gb: 4 }
+      q8_0: { peak_vram_gb: 50, peak_ram_gb: 4 }
+      f16: { peak_vram_gb: 95, peak_ram_gb: 4 }
+
+# ============================================================
+# Conversion Options
+# ============================================================
+conversion:
+  supported_formats:
+    - "gguf"
+    - "onnx"
+  default_format: "gguf"
+  quantization_types:
+    - "q4_0"
+    - "q4_1"
+    - "q5_0"
+    - "q5_1"
+    - "q8_0"
+    - "f16"
+  optimization_options:
+    fuse_attention: true
+    fuse_ffn: true
+    prune_unused: false
+  gguf_metadata:
+    model_type: "mixtral"
+    file_version: 3
+    tensor_data_layout: "default"
+
+# ============================================================
+# Hardware Requirements
+# ============================================================
+hardware:
+  minimum:
+    cpu: "x86_64, 8 cores"
+    ram: "32 GB"
+    disk: "SSD, 60 GB free"
+  recommended:
+    cpu: "x86_64, 16 cores with AVX-512"
+    ram: "48 GB"
+    gpu: "NVIDIA RTX 4090 24GB or better"
+    disk: "NVMe SSD, 150 GB free"
+  supported_backends:
+    - "cpu"
+    - "cuda"
+    - "vulkan"
+    - "metal"
+
+# ============================================================
+# Dependencies
+# ============================================================
+dependencies:
+  required:
+    - "torch>=2.1.0"
+    - "numpy>=1.24.0"
+    - "safetensors>=0.3.0"
+  optional:
+    - "xformers>=0.0.20"
+    - "flash-attn>=2.0.0"
+    - "transformers>=4.36.0"
+    - "accelerate>=0.20.0"
+
+# ============================================================
+# Registry Metadata
+# ============================================================
+registry:
+  tags: ["llm", "text-generation", "mixtral", "moe"]
+  category: "text-generation"
+  tasks: ["text-generation", "conversational"]
+  languages: ["en", "fr", "de", "it", "es"]
+  featured: true
+  created: "2023-12-11"
+  updated: "2024-06-01"

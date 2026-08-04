@@ -8,15 +8,17 @@ Usage::
 
     from ainos import AinosClient
 
-    client = AinosClient()
+    # With authentication
+    client = AinosClient(auth_token="your-token-here")
     client.connect()
+    client.authenticate()
 
     # Sync inference
     resp = client.infer("Hello, Ainos!")
     print(resp.output)
 
     # Context manager
-    with AinosClient() as c:
+    with AinosClient(auth_token="token") as c:
         status = c.status()
         print(status)
 
@@ -66,6 +68,10 @@ class AinosTimeoutError(AinosError):
     """Raised when an operation exceeds the configured timeout."""
 
 
+class AinosAuthError(AinosError):
+    """Raised when authentication with the daemon fails."""
+
+
 # ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
@@ -82,6 +88,10 @@ class AinosClient:
         auto_reconnect: Whether to attempt a single reconnect on failure
             (default ``True``).
         reconnect_delay: Seconds to wait before reconnecting (default ``1``).
+        auth_token: Bearer token for authentication. If provided, the client
+            will automatically authenticate on connect (default ``None``).
+        auto_authenticate: Whether to automatically authenticate after
+            connecting when ``auth_token`` is provided (default ``True``).
     """
 
     def __init__(
@@ -92,6 +102,8 @@ class AinosClient:
         read_timeout: float = 120.0,
         auto_reconnect: bool = True,
         reconnect_delay: float = 1.0,
+        auth_token: Optional[str] = None,
+        auto_authenticate: bool = True,
     ) -> None:
         self._host = host
         self._port = port
@@ -99,9 +111,39 @@ class AinosClient:
         self._read_timeout = read_timeout
         self._auto_reconnect = auto_reconnect
         self._reconnect_delay = reconnect_delay
+        self._auth_token = auth_token
+        self._auto_authenticate = auto_authenticate
 
         self._socket: Optional[socket.socket] = None
         self._lock = threading.Lock()
+        self._session_token: Optional[str] = None
+        self._authenticated = False
+        self._permissions: list[str] = []
+        self._session_ttl: int = 0
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def connected(self) -> bool:
+        """``True`` if the socket is currently open."""
+        return self._socket is not None
+
+    @property
+    def authenticated(self) -> bool:
+        """``True`` if the client has been authenticated with the daemon."""
+        return self._authenticated
+
+    @property
+    def session_token(self) -> Optional[str]:
+        """The current session token, if authenticated."""
+        return self._session_token
+
+    @property
+    def permissions(self) -> list[str]:
+        """The permissions granted to the current session."""
+        return list(self._permissions)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -110,8 +152,12 @@ class AinosClient:
     def connect(self) -> None:
         """Open a TCP connection to the daemon.
 
+        If ``auth_token`` and ``auto_authenticate`` are set, this will
+        also attempt authentication after connecting.
+
         Raises:
             AinosConnectionError: If the connection cannot be established.
+            AinosAuthError: If auto-authentication fails.
         """
         with self._lock:
             if self._socket is not None:
@@ -133,6 +179,10 @@ class AinosClient:
                 "Connected to Ainos daemon at %s:%s", self._host, self._port
             )
 
+        # Auto-authenticate if token is provided
+        if self._auth_token and self._auto_authenticate:
+            self.authenticate(self._auth_token)
+
     def disconnect(self) -> None:
         """Close the TCP connection if open."""
         with self._lock:
@@ -142,12 +192,58 @@ class AinosClient:
                 except OSError:
                     pass
                 self._socket = None
+                self._session_token = None
+                self._authenticated = False
+                self._permissions = []
                 logger.info("Disconnected from Ainos daemon")
 
-    @property
-    def connected(self) -> bool:
-        """``True`` if the socket is currently open."""
-        return self._socket is not None
+    def authenticate(self, token: Optional[str] = None) -> dict[str, Any]:
+        """Authenticate with the daemon using a bearer token.
+
+        Args:
+            token: The bearer token. If not provided, uses the token
+                from the constructor.
+
+        Returns:
+            The authentication response dict with keys:
+            - ``success``: bool
+            - ``session_token``: str (if successful)
+            - ``message``: str
+            - ``permissions``: list[str]
+            - ``session_ttl_seconds``: int
+
+        Raises:
+            AinosAuthError: If authentication fails.
+            AinosConnectionError: If the connection is lost.
+        """
+        token = token or self._auth_token
+        if not token:
+            raise AinosAuthError("No authentication token provided")
+
+        payload = _build_request("Auth", token=token)
+        data = self._send_recv(payload)
+
+        if data.get("type") != "AuthResponse":
+            raise AinosAuthError(
+                f"Unexpected response type: {data.get('type')}"
+            )
+
+        if not data.get("success", False):
+            raise AinosAuthError(
+                data.get("message", "Authentication failed")
+            )
+
+        self._session_token = data.get("session_token")
+        self._authenticated = True
+        self._permissions = data.get("permissions", [])
+        self._session_ttl = data.get("session_ttl_seconds", 0)
+
+        logger.info(
+            "Authenticated successfully, session token: %s...",
+            self._session_token[:8] if self._session_token else "None",
+        )
+
+        return data
 
     # ------------------------------------------------------------------
     # Context manager
@@ -240,11 +336,15 @@ class AinosClient:
             )
         return _parse_model_list_response(data)
 
-    def model_load(self, path: str) -> None:
+    def model_load(self, path: str) -> dict[str, Any]:
         """Load a model into memory by its file path.
 
         Args:
             path: Absolute path to the model file on disk.
+
+        Returns:
+            A dict with keys: ``model_id``, ``status``, ``message``,
+            and optionally ``model_info``.
 
         Raises:
             AinosError: If the daemon returns an error.
@@ -255,11 +355,21 @@ class AinosClient:
         if data.get("type") == "Error":
             raise AinosError(data.get("message", "Model load failed"))
 
-    def model_unload(self, model_id: str) -> None:
+        return {
+            "model_id": data.get("model_id", ""),
+            "status": data.get("status", "error"),
+            "message": data.get("message", ""),
+            "model_info": data.get("model_info"),
+        }
+
+    def model_unload(self, model_id: str) -> dict[str, Any]:
         """Unload a model from memory.
 
         Args:
             model_id: The model identifier (e.g. ``"phi_3_mini_4k..."``).
+
+        Returns:
+            A dict with keys: ``model_id``, ``status``, ``message``.
 
         Raises:
             AinosError: If the daemon returns an error.
@@ -269,6 +379,12 @@ class AinosClient:
 
         if data.get("type") == "Error":
             raise AinosError(data.get("message", "Model unload failed"))
+
+        return {
+            "model_id": data.get("model_id", ""),
+            "status": data.get("status", "error"),
+            "message": data.get("message", ""),
+        }
 
     def context_store(self, key: str, value: str) -> str:
         """Persist a key-value pair in the daemon's context store.
@@ -300,9 +416,24 @@ class AinosClient:
         data = self._send_recv(payload)
 
         if data.get("type") == "Error":
-            # Key-not-found is a normal case — return None
             return None
         return data.get("output", "")
+
+    def rate_limit_status(self) -> dict[str, Any]:
+        """Query the current rate limit status for this session.
+
+        Returns:
+            A dict with rate limit information for each category.
+
+        Raises:
+            AinosError: If the query fails.
+        """
+        payload = _build_request("RateLimitStatus")
+        data = self._send_recv(payload)
+
+        if data.get("type") == "Error":
+            raise AinosError(data.get("message", "Rate limit query failed"))
+        return data
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -373,3 +504,5 @@ class AinosClient:
                 except OSError:
                     pass
                 self._socket = None
+                self._session_token = None
+                self._authenticated = False

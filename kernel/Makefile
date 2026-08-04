@@ -14,7 +14,6 @@ obj-m += hotpatch.o
 # 多源文件模块
 ai-scheduler-objs := ai-scheduler-main.o ai-scheduler-policy.o
 ai-syscalls-objs := ai-syscalls-main.o
-ai-vector-accel-objs := ai-vector-accel-main.o
 proc-ai-objs := ai-proc/proc_ai.o
 self-heal-objs := ai-self-heal/self_heal.o
 ai-kill-objs := ai-kill/ai_kill.o
@@ -22,8 +21,20 @@ ai-tmpfs-objs := ai-tmpfs/ai_tmpfs.o
 ai-readahead-objs := ai-readahead/ai_readahead.o
 hotpatch-objs := hotpatch/hotpatch.o
 
-# 编译标志
+# 编译标志 (base)
 ccflags-y := -I$(PWD)/include -O2 -Wall -Werror
+
+# ============================================
+# SIMD 加速架构特定构建
+# ============================================
+# 检测目标架构 (默认使用 uname -m)
+ARCH ?= $(shell uname -m)
+
+# 清空基础对象列表，由 arch Makefile 填充
+ai-vector-accel-objs := ai-vector-accel-main.o
+
+# 包含架构特定构建规则
+include $(PWD)/arch/Makefile
 
 all:
 	$(MAKE) -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules

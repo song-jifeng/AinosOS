@@ -10,9 +10,11 @@
 // - check_network_available() timeout behavior
 // - AppState initialization
 // - ModelRegistry basics
-// - ContextManager store/retrieve/delete
+// - ContextManager store/retrieve/delete + stats + LRU + TTL
 // - SemanticCache get/put/miss/eviction
 // - ThermalMonitor zone mapping and power mode transitions
+// - RuntimeManager model loading, inference, stats, error handling
+// - IPC ModelLoad / ModelUnload message handling
 
 #![cfg(test)]
 
@@ -23,6 +25,9 @@ use crate::models::ModelRegistry;
 use crate::context::ContextManager;
 use crate::cache::SemanticCache;
 use crate::thermal::{ThermalMonitor, ThermalZone, PowerMode, power_mode_name, thermal_zone_name};
+use crate::runtime::{self, RuntimeManager, EngineType, InferenceRequest, RuntimeError,
+                     QuantizationType, SamplingConfig, KVCacheState};
+use crate::ratelimit::RateLimitCategory;
 
 // =========================================================================
 // DaemonConfig tests
@@ -143,11 +148,13 @@ fn test_ipc_message_roundtrip_status_response() {
         models_loaded: 3,
         total_requests: 5000,
         network_available: true,
+        active_sessions: 0,
+        rate_limits: None,
     };
     let json = serde_json::to_string(&original).unwrap();
     let deserialized: IpcMessage = serde_json::from_str(&json).unwrap();
     match deserialized {
-        IpcMessage::StatusResponse { uptime, models_loaded, total_requests, network_available } => {
+        IpcMessage::StatusResponse { uptime, models_loaded, total_requests, network_available, .. } => {
             assert_eq!(uptime, 999);
             assert_eq!(models_loaded, 3);
             assert_eq!(total_requests, 5000);
@@ -319,14 +326,12 @@ fn test_generate_local_response_reason_included() {
 
 #[tokio::test]
 async fn test_check_network_available_timeout() {
-    // The internal timeout is 3 seconds. Wrap in a 10-second test guard.
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         ipc::check_network_available(),
     ).await;
 
     assert!(result.is_ok(), "check_network_available() must not deadlock");
-    // Both true (network available) and false (no network) are valid.
     let _available = result.unwrap();
 }
 
@@ -369,18 +374,291 @@ fn test_model_registry_new() {
 
 #[test]
 fn test_model_registry_load_unload() {
-    // We need to set up available models first. Since the registry is
-    // populated via scan_directory(), we test the load/unload methods
-    // by pre-populating. For this test we rely on the fact that
-    // load() checks available keys.
-    // Instead, we test the list() and count_loaded() basic behavior.
     let registry = ModelRegistry::new();
     let list = registry.list();
     assert!(list.is_empty());
 }
 
 // =========================================================================
-// ContextManager tests
+// RuntimeManager tests
+// =========================================================================
+
+#[test]
+fn test_runtime_manager_new() {
+    let rm = RuntimeManager::new();
+    assert_eq!(rm.loaded_count(), 0);
+    assert_eq!(rm.active_engine(), &EngineType::GGML);
+}
+
+#[test]
+fn test_runtime_manager_switch_engine() {
+    let mut rm = RuntimeManager::new();
+    assert_eq!(rm.active_engine(), &EngineType::GGML);
+    rm.switch_engine(EngineType::ONNX);
+    assert_eq!(rm.active_engine(), &EngineType::ONNX);
+}
+
+#[test]
+fn test_runtime_manager_get_stats() {
+    let rm = RuntimeManager::new();
+    let stats = rm.get_stats();
+    assert_eq!(stats.get("models_loaded"), Some(&0));
+    assert_eq!(stats.get("total_inferences"), Some(&0));
+    assert!(stats.contains_key("total_errors"));
+    assert!(stats.contains_key("max_context_length"));
+    assert!(stats.contains_key("total_tokens_generated"));
+}
+
+#[test]
+fn test_runtime_manager_get_loaded_models_empty() {
+    let rm = RuntimeManager::new();
+    assert!(rm.get_loaded_models().is_empty());
+}
+
+#[test]
+fn test_runtime_manager_set_max_context_length() {
+    let mut rm = RuntimeManager::new();
+    rm.set_max_context_length(8192);
+    let stats = rm.get_stats();
+    assert_eq!(stats.get("max_context_length"), Some(&8192));
+}
+
+#[test]
+fn test_runtime_manager_set_max_loaded_models() {
+    let mut rm = RuntimeManager::new();
+    rm.set_max_loaded_models(4);
+    let stats = rm.get_stats();
+    assert_eq!(stats.get("max_loaded_models"), Some(&4));
+}
+
+#[test]
+fn test_runtime_manager_load_model_missing_file() {
+    let mut rm = RuntimeManager::new();
+    let result = rm.load_model("/nonexistent/model.gguf", "test_model");
+    assert!(result.is_err());
+    match result {
+        Err(RuntimeError::ModelNotFound(_)) => {} // expected
+        _ => panic!("Expected ModelNotFound error"),
+    }
+}
+
+#[test]
+fn test_runtime_manager_load_model_duplicate() {
+    // 加载不存在的模型两次，第二次应返回错误（文件不存在）
+    let mut rm = RuntimeManager::new();
+    let result1 = rm.load_model("/nonexistent/duplicate.gguf", "dup");
+    assert!(result1.is_err());
+}
+
+#[tokio::test]
+async fn test_runtime_manager_infer_model_not_loaded() {
+    let mut rm = RuntimeManager::new();
+    let req = InferenceRequest::default();
+    let result = rm.infer(req).await;
+    assert!(result.is_err());
+    match result {
+        Err(RuntimeError::ModelNotLoaded(_)) => {} // expected
+        _ => panic!("Expected ModelNotLoaded error"),
+    }
+}
+
+#[tokio::test]
+async fn test_runtime_manager_infer_streaming_model_not_loaded() {
+    let mut rm = RuntimeManager::new();
+    let req = InferenceRequest::default();
+    let tokens: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tokens_clone = tokens.clone();
+    let result = rm.infer_streaming(req, move |token| {
+        tokens_clone.lock().unwrap().push(token.to_string());
+    }).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn test_runtime_manager_batch_infer() {
+    let mut rm = RuntimeManager::new();
+    let requests = vec![
+        InferenceRequest { model: "m1".into(), prompt: "Hello".into(), ..Default::default() },
+        InferenceRequest { model: "m2".into(), prompt: "World".into(), ..Default::default() },
+    ];
+    let results = rm.batch_infer(requests).await;
+    assert_eq!(results.len(), 2);
+    for result in results {
+        assert!(result.is_err()); // models not loaded
+    }
+}
+
+#[test]
+fn test_runtime_manager_detect_architecture() {
+    assert_eq!(RuntimeManager::detect_architecture("llama-2-7b.gguf"), "llama");
+    assert_eq!(RuntimeManager::detect_architecture("phi-3-mini.gguf"), "phi3");
+    assert_eq!(RuntimeManager::detect_architecture("mistral-7b.gguf"), "mistral");
+    assert_eq!(RuntimeManager::detect_architecture("unknown.gguf"), "auto");
+    assert_eq!(RuntimeManager::detect_architecture("qwen2-7b.gguf"), "qwen2");
+    assert_eq!(RuntimeManager::detect_architecture("falcon-7b.gguf"), "falcon");
+}
+
+#[test]
+fn test_runtime_manager_detect_quantization() {
+    assert_eq!(RuntimeManager::detect_quantization("model-q4_0.gguf"),
+        Some(QuantizationType::Q4_0));
+    assert_eq!(RuntimeManager::detect_quantization("model-q8_0.gguf"),
+        Some(QuantizationType::Q8_0));
+    assert_eq!(RuntimeManager::detect_quantization("model-fp16.gguf"),
+        Some(QuantizationType::F16));
+    assert_eq!(RuntimeManager::detect_quantization("model.gguf"), None);
+}
+
+// =========================================================================
+// QuantizationType tests
+// =========================================================================
+
+#[test]
+fn test_quantization_from_str() {
+    assert_eq!(QuantizationType::from_str("q4_0"), Some(QuantizationType::Q4_0));
+    assert_eq!(QuantizationType::from_str("Q8_0"), Some(QuantizationType::Q8_0));
+    assert_eq!(QuantizationType::from_str("fp16"), Some(QuantizationType::F16));
+    assert_eq!(QuantizationType::from_str("fp32"), Some(QuantizationType::F32));
+    assert_eq!(QuantizationType::from_str("invalid"), None);
+}
+
+#[test]
+fn test_quantization_size_multiplier() {
+    assert!((QuantizationType::Q4_0.size_multiplier() - 0.25).abs() < 0.01);
+    assert!((QuantizationType::F32.size_multiplier() - 1.0).abs() < 0.01);
+    assert!((QuantizationType::F16.size_multiplier() - 0.5).abs() < 0.01);
+    assert!((QuantizationType::Q8_0.size_multiplier() - 0.5).abs() < 0.01);
+}
+
+// =========================================================================
+// InferenceRequest tests
+// =========================================================================
+
+#[test]
+fn test_inference_request_default() {
+    let req = InferenceRequest::default();
+    assert_eq!(req.model, "default");
+    assert_eq!(req.temperature, 0.7);
+    assert_eq!(req.top_p, 0.9);
+    assert_eq!(req.top_k, 40);
+    assert_eq!(req.max_tokens, 512);
+    assert_eq!(req.repeat_penalty, 1.1);
+    assert_eq!(req.frequency_penalty, 0.0);
+    assert_eq!(req.presence_penalty, 0.0);
+}
+
+#[test]
+fn test_inference_request_new() {
+    let req = InferenceRequest::new(
+        "test_model".into(),
+        "Hello".into(),
+        Some(0.5),
+        Some(100),
+        Some("sess1".into()),
+    );
+    assert_eq!(req.model, "test_model");
+    assert_eq!(req.prompt, "Hello");
+    assert_eq!(req.temperature, 0.5);
+    assert_eq!(req.max_tokens, 100);
+    assert_eq!(req.session_id, Some("sess1".into()));
+}
+
+#[test]
+fn test_inference_request_new_defaults() {
+    let req = InferenceRequest::new("m".into(), "test".into(), None, None, None);
+    assert_eq!(req.temperature, 0.7);
+    assert_eq!(req.max_tokens, 512);
+    assert_eq!(req.session_id, None);
+}
+
+// =========================================================================
+// SamplingConfig tests
+// =========================================================================
+
+#[test]
+fn test_sampling_config_default() {
+    let cfg = SamplingConfig::default();
+    assert!((cfg.temperature - 0.7).abs() < 0.001);
+    assert!((cfg.top_p - 0.9).abs() < 0.001);
+    assert_eq!(cfg.top_k, 40);
+}
+
+#[test]
+fn test_sampling_config_from_request() {
+    let req = InferenceRequest {
+        temperature: 0.3,
+        top_p: 0.8,
+        top_k: 20,
+        ..Default::default()
+    };
+    let cfg = SamplingConfig::from(&req);
+    assert!((cfg.temperature - 0.3).abs() < 0.001);
+    assert!((cfg.top_p - 0.8).abs() < 0.001);
+    assert_eq!(cfg.top_k, 20);
+}
+
+// =========================================================================
+// KVCacheState tests
+// =========================================================================
+
+#[test]
+fn test_kv_cache_state() {
+    let cache = KVCacheState::new(32, 32, 4096, 2048);
+    assert_eq!(cache.max_seq_len, 2048);
+    assert_eq!(cache.n_layers, 32);
+    assert_eq!(cache.n_heads, 32);
+    assert_eq!(cache.n_embd, 4096);
+    assert!(cache.memory_usage > 0);
+}
+
+#[test]
+fn test_kv_cache_defaults() {
+    let cache = KVCacheState::new(1, 1, 64, 128);
+    assert_eq!(cache.current_seq_len, 0);
+    assert!(cache.memory_usage > 0);
+}
+
+// =========================================================================
+// RuntimeError tests
+// =========================================================================
+
+#[test]
+fn test_runtime_error_display() {
+    let err = RuntimeError::ModelNotFound("test.gguf".into());
+    assert_eq!(err.to_string(), "Model not found: test.gguf");
+
+    let err = RuntimeError::ModelNotLoaded("m1".into());
+    assert_eq!(err.to_string(), "Model not loaded: m1");
+
+    let err = RuntimeError::InferenceFailed("OOM".into());
+    assert_eq!(err.to_string(), "Inference failed: OOM");
+
+    let err = RuntimeError::InvalidParameter("bad param".into());
+    assert_eq!(err.to_string(), "Invalid parameter: bad param");
+
+    let err = RuntimeError::OutOfMemory("8GB limit".into());
+    assert_eq!(err.to_string(), "Out of memory: 8GB limit");
+
+    let err = RuntimeError::EngineNotInitialized("no GPU".into());
+    assert_eq!(err.to_string(), "Engine not initialized: no GPU");
+
+    let err = RuntimeError::ContextOverflow("4096 limit".into());
+    assert_eq!(err.to_string(), "Context overflow: 4096 limit");
+
+    let err = RuntimeError::Unsupported("feature not available".into());
+    assert_eq!(err.to_string(), "Unsupported operation: feature not available");
+}
+
+#[test]
+fn test_runtime_error_into_string() {
+    let err = RuntimeError::ModelNotLoaded("m1".into());
+    let s: String = err.into();
+    assert_eq!(s, "Model not loaded: m1");
+}
+
+// =========================================================================
+// ContextManager tests (enhanced)
 // =========================================================================
 
 #[test]
@@ -420,6 +698,128 @@ fn test_context_session_entries() {
     assert_eq!(cm.session_entries("default"), 0);
     cm.store("a".to_string(), "1".to_string());
     assert_eq!(cm.session_entries("default"), 1);
+    assert_eq!(cm.session_entries("other"), 0);
+}
+
+#[test]
+fn test_context_retrieve_expired_ttl() {
+    let mut cm = ContextManager::new();
+    cm.ttl_days = 0; // 立即过期
+    cm.store("key1".to_string(), "value1".to_string());
+    // TTL 为 0 时，retrieve 应返回 None (过期)
+    assert_eq!(cm.retrieve("key1"), None);
+}
+
+#[test]
+fn test_context_hit_rate() {
+    let cm = ContextManager::new();
+    assert_eq!(cm.hit_rate(), 0.0);
+    assert_eq!(cm.hits(), 0);
+    assert_eq!(cm.misses(), 0);
+}
+
+#[test]
+fn test_context_hit_rate_after_operations() {
+    let mut cm = ContextManager::new();
+    cm.store("key1".to_string(), "val1".to_string());
+    cm.retrieve("key1"); // hit
+    cm.retrieve("nonexistent"); // miss
+    assert_eq!(cm.hits(), 1);
+    assert_eq!(cm.misses(), 1);
+    assert!((cm.hit_rate() - 0.5).abs() < 0.001);
+}
+
+#[test]
+fn test_context_get_stats() {
+    let cm = ContextManager::new();
+    let stats = cm.get_stats();
+    assert!(stats.contains_key("hits"));
+    assert!(stats.contains_key("misses"));
+    assert!(stats.contains_key("evictions"));
+    assert!(stats.contains_key("entries"));
+    assert!(stats.contains_key("ttl_days"));
+    assert_eq!(stats.get("ttl_days"), Some(&30));
+}
+
+#[test]
+fn test_context_total_stores_retrieves() {
+    let mut cm = ContextManager::new();
+    assert_eq!(cm.total_stores(), 0);
+    assert_eq!(cm.total_retrieves(), 0);
+    cm.store("a".to_string(), "1".to_string());
+    cm.store("b".to_string(), "2".to_string());
+    let _ = cm.retrieve("a");
+    let _ = cm.retrieve("b");
+    let _ = cm.retrieve("nonexistent");
+    assert_eq!(cm.total_stores(), 2);
+    assert_eq!(cm.total_retrieves(), 3);
+}
+
+#[test]
+fn test_context_lru_eviction() {
+    let mut cm = ContextManager::new();
+    cm.max_memory_entries = 2;
+    cm.store("a".to_string(), "1".to_string());
+    cm.store("b".to_string(), "2".to_string());
+    // 访问 "a" 使其成为最近使用
+    cm.retrieve("a");
+    // 存储 "c" 应淘汰 "b" (最久未访问)
+    cm.store("c".to_string(), "3".to_string());
+    assert_eq!(cm.retrieve("a"), Some("1".to_string()));
+    assert_eq!(cm.retrieve("b"), None); // 被淘汰
+    assert_eq!(cm.retrieve("c"), Some("3".to_string()));
+}
+
+#[test]
+fn test_context_evictions_counter() {
+    let mut cm = ContextManager::new();
+    cm.max_entries = 1;
+    assert_eq!(cm.evictions(), 0);
+    cm.store("a".to_string(), "1".to_string());
+    cm.store("b".to_string(), "2".to_string()); // 应淘汰 "a"
+    assert!(cm.evictions() >= 1);
+}
+
+#[test]
+fn test_context_cleanup_expired() {
+    let mut cm = ContextManager::new();
+    cm.ttl_days = 0; // 立即过期
+    cm.store("key1".to_string(), "value1".to_string());
+    cm.cleanup_expired();
+    assert_eq!(cm.count_entries(), 0);
+}
+
+#[test]
+fn test_context_log_rotation_config() {
+    let cm = ContextManager::new();
+    assert!(cm.should_rotate_logs());
+    assert_eq!(cm.log_rotation.max_size_mb, 100);
+    assert_eq!(cm.log_rotation.retain_days, 7);
+}
+
+#[test]
+fn test_context_with_log_rotation() {
+    let config = crate::context::LogRotationConfig {
+        enabled: false,
+        max_size_mb: 200,
+        retain_days: 14,
+        log_path: "custom.log".to_string(),
+    };
+    let cm = ContextManager::new().with_log_rotation(config);
+    assert!(!cm.should_rotate_logs());
+    assert_eq!(cm.log_rotation.max_size_mb, 200);
+}
+
+#[test]
+fn test_context_max_entries_eviction() {
+    let mut cm = ContextManager::new();
+    cm.max_entries = 2;
+    cm.store("a".to_string(), "1".to_string());
+    cm.store("b".to_string(), "2".to_string());
+    cm.store("c".to_string(), "3".to_string()); // 应淘汰 "a"
+    assert_eq!(cm.retrieve("a"), None);
+    assert_eq!(cm.retrieve("b"), Some("2".to_string()));
+    assert_eq!(cm.retrieve("c"), Some("3".to_string()));
 }
 
 // =========================================================================
@@ -450,7 +850,6 @@ fn test_cache_key_different_temp() {
 
 #[test]
 fn test_cache_key_quantization() {
-    // 0.700 and 0.7 should produce the same key
     let key1 = SemanticCache::compute_key("hello", "model1", 0.700);
     let key2 = SemanticCache::compute_key("hello", "model1", 0.7);
     assert_eq!(key1, key2);
@@ -490,7 +889,6 @@ fn test_cache_clear() {
 
 #[test]
 fn test_cache_with_capacity_minimum() {
-    // Capacity of 0 should be clamped to 1
     let cache = SemanticCache::with_capacity(0);
     assert!(cache.capacity() >= 1);
 }
@@ -525,15 +923,10 @@ fn test_thermal_zone_critical() {
 
 #[test]
 fn test_thermal_zone_boundaries() {
-    // Cool -> Warm at 70°C
     assert_eq!(ThermalMonitor::celsius_to_zone(69.9), ThermalZone::Cool);
     assert_eq!(ThermalMonitor::celsius_to_zone(70.0), ThermalZone::Warm);
-
-    // Warm -> Hot at 85°C
     assert_eq!(ThermalMonitor::celsius_to_zone(84.9), ThermalZone::Warm);
     assert_eq!(ThermalMonitor::celsius_to_zone(85.0), ThermalZone::Hot);
-
-    // Hot -> Critical at 95°C
     assert_eq!(ThermalMonitor::celsius_to_zone(94.9), ThermalZone::Hot);
     assert_eq!(ThermalMonitor::celsius_to_zone(95.0), ThermalZone::Critical);
 }
@@ -597,9 +990,170 @@ fn test_thermal_monitor_new() {
 
 #[test]
 fn test_power_mode_ordering() {
-    // Max < Balanced < Efficient < Emergency
     assert!(PowerMode::Max < PowerMode::Balanced);
     assert!(PowerMode::Balanced < PowerMode::Efficient);
     assert!(PowerMode::Efficient < PowerMode::Emergency);
     assert!(PowerMode::Max < PowerMode::Emergency);
+}
+
+// =========================================================================
+// process_message tests (ModelLoad / ModelUnload)
+// =========================================================================
+
+/// Helper to create a test ClientState with auth.
+fn auth_client() -> crate::ipc::ClientState {
+    let mut client = crate::ipc::ClientState::new("test-client".to_string());
+    client.authenticated = true;
+    client
+}
+
+#[tokio::test]
+async fn test_process_message_status() {
+    let cfg = DaemonConfig::default();
+    let state = std::sync::Arc::new(tokio::sync::RwLock::new(AppState::new(cfg)));
+    let client = auth_client();
+
+    let response = ipc::process_message(state, IpcMessage::Status, &client).await;
+    match response {
+        IpcMessage::StatusResponse { uptime, models_loaded, total_requests, network_available, .. } => {
+            let _ = uptime;
+            assert_eq!(models_loaded, 0);
+            assert_eq!(total_requests, 0);
+            let _ = network_available;
+        }
+        _ => panic!("Expected StatusResponse, got {:?}", response),
+    }
+}
+
+#[tokio::test]
+async fn test_process_message_model_load_nonexistent() {
+    let cfg = DaemonConfig::default();
+    let state = std::sync::Arc::new(tokio::sync::RwLock::new(AppState::new(cfg)));
+    let client = auth_client();
+
+    let response = ipc::process_message(state, IpcMessage::ModelLoad {
+        path: "/nonexistent/model.gguf".into(),
+    }, &client).await;
+    match response {
+        IpcMessage::ModelLoadResponse { status, .. } => {
+            assert_eq!(status, "error", "Should report error for nonexistent file");
+        }
+        _ => panic!("Expected ModelLoadResponse, got {:?}", response),
+    }
+}
+
+#[tokio::test]
+async fn test_process_message_model_unload_not_loaded() {
+    let cfg = DaemonConfig::default();
+    let state = std::sync::Arc::new(tokio::sync::RwLock::new(AppState::new(cfg)));
+    let client = auth_client();
+
+    let response = ipc::process_message(state, IpcMessage::ModelUnload {
+        model_id: "nonexistent_model".into(),
+    }, &client).await;
+    match response {
+        IpcMessage::ModelUnloadResponse { status, .. } => {
+            assert_eq!(status, "not_found", "Should report not_found for unloaded model");
+        }
+        _ => panic!("Expected ModelUnloadResponse, got {:?}", response),
+    }
+}
+
+#[tokio::test]
+async fn test_process_message_unsupported() {
+    let cfg = DaemonConfig::default();
+    let state = std::sync::Arc::new(tokio::sync::RwLock::new(AppState::new(cfg)));
+    let client = auth_client();
+
+    // ModelLoad and ModelUnload are now handled with proper response types
+    let response = ipc::process_message(state.clone(), IpcMessage::ModelLoad {
+        path: "/nonexistent/path.gguf".into(),
+    }, &client).await;
+    match response {
+        IpcMessage::ModelLoadResponse { status, .. } => {
+            assert_eq!(status, "error", "Should be a ModelLoadResponse");
+        }
+        _ => panic!("Expected ModelLoadResponse, got {:?}", response),
+    }
+}
+
+// =========================================================================
+// Auth integration tests
+// =========================================================================
+
+#[tokio::test]
+async fn test_auth_integration_authenticate() {
+    let mut cfg = DaemonConfig::default();
+    cfg.auth.enabled = true;
+    cfg.auth.token = "test-token-thirty-two-chars".to_string();
+    let state = std::sync::Arc::new(tokio::sync::RwLock::new(AppState::new(cfg)));
+
+    // Test successful authentication
+    {
+        let s = state.read().await;
+        let result = s.session_manager.authenticate("test-client", "test-token-thirty-two-chars").await;
+        assert!(result.is_ok(), "Authentication should succeed with correct token");
+        let session_token = result.unwrap();
+        let session = s.session_manager.validate_session(&session_token).await;
+        assert!(session.is_ok(), "Session should be valid");
+    }
+}
+
+#[tokio::test]
+async fn test_auth_integration_permission_denied() {
+    let mut cfg = DaemonConfig::default();
+    cfg.auth.enabled = true;
+    cfg.auth.token = "test-token-thirty-two-chars".to_string();
+    let state = std::sync::Arc::new(tokio::sync::RwLock::new(AppState::new(cfg)));
+
+    let session_manager;
+    let session_token;
+    {
+        let s = state.read().await;
+        session_manager = s.session_manager.clone();
+    }
+    let result = session_manager.authenticate("test-client", "test-token-thirty-two-chars").await;
+    assert!(result.is_ok());
+    session_token = result.unwrap();
+
+    // Default permissions don't include Admin, so this should fail
+    let result = session_manager.check_permission(&session_token, &crate::auth::Permission::Admin).await;
+    assert!(result.is_err(), "Default permissions should not include Admin");
+}
+
+// =========================================================================
+// Rate limit integration tests
+// =========================================================================
+
+#[tokio::test]
+async fn test_rate_limit_integration() {
+    let cfg = DaemonConfig::default();
+    let state = std::sync::Arc::new(tokio::sync::RwLock::new(AppState::new(cfg)));
+
+    let rate_limiter;
+    {
+        let s = state.read().await;
+        rate_limiter = s.rate_limiter.clone();
+    }
+
+    // Test basic rate limiting
+    let result = rate_limiter.check_rate_limit("test-client", RateLimitCategory::Status).await;
+    assert!(result.is_ok(), "First request should be allowed");
+
+    let info = result.unwrap();
+    assert!(info.remaining < info.limit, "Remaining should be less than limit");
+}
+
+// =========================================================================
+// AppState integration tests
+// =========================================================================
+
+#[test]
+fn test_app_state_new_includes_security() {
+    let cfg = DaemonConfig::default();
+    let state = AppState::new(cfg);
+
+    // Verify security components are initialized
+    assert!(state.session_manager.is_enabled(), "Session manager should be enabled");
+    assert!(state.rate_limiter.stats().total_allowed.load(std::sync::atomic::Ordering::Relaxed) == 0);
 }

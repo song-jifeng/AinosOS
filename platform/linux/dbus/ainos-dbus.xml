@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AinosOS - D-Bus Interface Definition for AI Daemon
+  Copyright (C) 2024 AinosOS Developers
+  SPDX-License-Identifier: GPL-2.0-only
+
+  This file defines the D-Bus introspection data for the AinosOS AI Daemon.
+  The daemon registers on the system bus as com.ainos.Daemon1 and exposes
+  methods for inference, model lifecycle, context management, and status
+  monitoring.
+
+  Debugging:
+    gdbus introspect --system --dest com.ainos.Daemon1 --object-path /com/ainos/Daemon1
+    busctl introspect com.ainos.Daemon1 /com/ainos/Daemon1
+
+  Interface version: 1.0
+  D-Bus specification: https://dbus.freedesktop.org/doc/dbus-specification.html
+-->
+
+<node name="/com/ainos/Daemon1" xmlns:doc="http://www.freedesktop.org/dbus/1.0/doc.dtd">
+
+  <!--
+    com.ainos.Daemon1:
+    @short_description: AinosOS AI Daemon D-Bus interface
+
+    Main interface for the AinosOS AI Daemon. Provides AI inference,
+    model lifecycle management, context storage, and system monitoring
+    capabilities over D-Bus.
+  -->
+  <interface name="com.ainos.Daemon1">
+
+    <!--
+      Infer:
+      @model: Model identifier to use for inference (e.g. "qwen2.5-0.5b-instruct-q4.gguf")
+      @prompt: Input text prompt for the model
+      @temperature: Sampling temperature (0.0 - 2.0, default 0.7)
+      @max_tokens: Maximum tokens to generate (default 512)
+      @session_id: Optional session identifier for context tracking
+      @output: Generated text response
+      @tokens_generated: Number of tokens in the response
+      @inference_ms: Inference duration in milliseconds
+      @source: Inference source ("local" or "cloud")
+
+      Perform an AI inference request. Returns the generated text along
+      with metadata about the inference operation.
+    -->
+    <method name="Infer">
+      <arg name="model" direction="in" type="s"/>
+      <arg name="prompt" direction="in" type="s"/>
+      <arg name="temperature" direction="in" type="d"/>
+      <arg name="max_tokens" direction="in" type="u"/>
+      <arg name="session_id" direction="in" type="s"/>
+      <arg name="output" direction="out" type="s"/>
+      <arg name="tokens_generated" direction="out" type="u"/>
+      <arg name="inference_ms" direction="out" type="t"/>
+      <arg name="source" direction="out" type="s"/>
+      <annotation name="org.freedesktop.DBus.Method.Timeout" value="120000"/>
+    </method>
+
+    <!--
+      Status:
+      @version: Daemon version string (e.g. "1.0.0")
+      @uptime_seconds: Seconds since daemon started
+      @models_loaded: Number of currently loaded models
+      @total_requests: Total inference requests processed
+      @network_available: Whether network connectivity is available
+      @active_sessions: Number of active client sessions
+      @cpu_temp_celsius: Current CPU temperature (if sensor available)
+      @power_mode: Current power management mode (0=Max, 1=Balanced, 2=Efficient, 3=Emergency)
+
+      Get the current daemon status and statistics.
+    -->
+    <method name="Status">
+      <arg name="version" direction="out" type="s"/>
+      <arg name="uptime_seconds" direction="out" type="t"/>
+      <arg name="models_loaded" direction="out" type="u"/>
+      <arg name="total_requests" direction="out" type="t"/>
+      <arg name="network_available" direction="out" type="b"/>
+      <arg name="active_sessions" direction="out" type="u"/>
+      <arg name="cpu_temp_celsius" direction="out" type="d"/>
+      <arg name="power_mode" direction="out" type="u"/>
+    </method>
+
+    <!--
+      ModelList:
+      @models: Array of model information structures
+      @model_ids: Array of model identifiers
+      @model_names: Array of human-readable model names
+      @model_sizes: Array of model sizes in MB
+      @model_loaded: Array of boolean flags indicating load state
+
+      List all available models and their current load status.
+    -->
+    <method name="ModelList">
+      <arg name="models_json" direction="out" type="s"/>
+    </method>
+
+    <!--
+      ModelLoad:
+      @path: Absolute path to the model file on disk
+      @model_id: Unique identifier assigned to the loaded model
+      @status: Load status ("loaded", "already_loaded", "error")
+      @message: Human-readable status message
+
+      Load a model from disk into memory for inference.
+    -->
+    <method name="ModelLoad">
+      <arg name="path" direction="in" type="s"/>
+      <arg name="model_id" direction="out" type="s"/>
+      <arg name="status" direction="out" type="s"/>
+      <arg name="message" direction="out" type="s"/>
+      <annotation name="org.freedesktop.DBus.Method.Timeout" value="300000"/>
+    </method>
+
+    <!--
+      ModelUnload:
+      @model_id: Identifier of the model to unload
+      @status: Unload status ("unloaded", "not_found", "error")
+      @message: Human-readable status message
+
+      Unload a model from memory to free resources.
+    -->
+    <method name="ModelUnload">
+      <arg name="model_id" direction="in" type="s"/>
+      <arg name="status" direction="out" type="s"/>
+      <arg name="message" direction="out" type="s"/>
+    </method>
+
+    <!--
+      ContextStore:
+      @key: Context key (string identifier)
+      @value: Context value (string data)
+      @stored: Whether the context was successfully stored
+
+      Store a key-value pair in the daemon's context manager.
+    -->
+    <method name="ContextStore">
+      <arg name="key" direction="in" type="s"/>
+      <arg name="value" direction="in" type="s"/>
+      <arg name="stored" direction="out" type="b"/>
+    </method>
+
+    <!--
+      ContextRetrieve:
+      @key: Context key to retrieve
+      @value: Retrieved context value (empty string if not found)
+      @found: Whether the key was found in context storage
+
+      Retrieve a previously stored context value by key.
+    -->
+    <method name="ContextRetrieve">
+      <arg name="key" direction="in" type="s"/>
+      <arg name="value" direction="out" type="s"/>
+      <arg name="found" direction="out" type="b"/>
+    </method>
+
+    <!-- ================================================================== -->
+    <!-- Signals                                                           -->
+    <!-- ================================================================== -->
+
+    <!--
+      ThermalEvent:
+      @cpu_temp_celsius: Current CPU temperature in Celsius
+      @zone: Thermal zone identifier (0=Cool, 1=Warm, 2=Hot, 3=Critical)
+      @power_mode: Recommended power mode (0=Max, 1=Balanced, 2=Efficient, 3=Emergency)
+
+      Emitted when the thermal state changes significantly.
+      Clients can use this signal to adjust their behavior.
+    -->
+    <signal name="ThermalEvent">
+      <arg name="cpu_temp_celsius" type="d"/>
+      <arg name="zone" type="u"/>
+      <arg name="power_mode" type="u"/>
+    </signal>
+
+    <!--
+      ModelLoaded:
+      @model_id: Identifier of the loaded model
+      @model_name: Human-readable model name
+      @size_mb: Model size in megabytes
+
+      Emitted when a model has been successfully loaded into memory.
+    -->
+    <signal name="ModelLoaded">
+      <arg name="model_id" type="s"/>
+      <arg name="model_name" type="s"/>
+      <arg name="size_mb" type="t"/>
+    </signal>
+
+    <!--
+      ModelUnloaded:
+      @model_id: Identifier of the unloaded model
+
+      Emitted when a model has been unloaded from memory.
+    -->
+    <signal name="ModelUnloaded">
+      <arg name="model_id" type="s"/>
+    </signal>
+
+    <!--
+      Error:
+      @error_code: Numeric error code
+      @error_message: Human-readable error description
+      @error_domain: Error domain (e.g. "inference", "model", "system")
+
+      Emitted when an unrecoverable error occurs within the daemon.
+    -->
+    <signal name="Error">
+      <arg name="error_code" type="i"/>
+      <arg name="error_message" type="s"/>
+      <arg name="error_domain" type="s"/>
+    </signal>
+
+    <!-- ================================================================== -->
+    <!-- Properties                                                        -->
+    <!-- ================================================================== -->
+
+    <!--
+      Version:
+      @value: Semantic version string (e.g. "1.2.3")
+
+      The daemon's version string. Read-only.
+    -->
+    <property name="Version" type="s" access="read"/>
+
+    <!--
+      Status:
+      @value: Current daemon status string ("running", "loading", "error", "shutting_down")
+
+      The current operational status of the daemon. Read-only.
+    -->
+    <property name="Status" type="s" access="read"/>
+
+    <!--
+      Uptime:
+      @value: Uptime in seconds since daemon started
+
+      The number of seconds the daemon has been running. Read-only.
+    -->
+    <property name="Uptime" type="t" access="read"/>
+
+    <!--
+      LogLevel:
+      @value: Current log level ("trace", "debug", "info", "warn", "error")
+
+      The current logging verbosity level. Read-write.
+    -->
+    <property name="LogLevel" type="s" access="readwrite"/>
+
+    <!--
+      CpuTemperature:
+      @value: Current CPU temperature in Celsius (0.0 if sensor unavailable)
+
+      The current CPU temperature reading. Read-only.
+    -->
+    <property name="CpuTemperature" type="d" access="read"/>
+
+    <!--
+      PowerMode:
+      @value: Current power management mode (0=Max, 1=Balanced, 2=Efficient, 3=Emergency)
+
+      The current power management mode. Read-only.
+    -->
+    <property name="PowerMode" type="u" access="read"/>
+
+    <!--
+      MemoryUsed:
+      @value: Current memory usage in bytes
+
+      The daemon's current memory consumption. Read-only.
+    -->
+    <property name="MemoryUsed" type="t" access="read"/>
+
+    <!--
+      ModelsLoaded:
+      @value: Number of currently loaded models
+
+      Count of models currently loaded in memory. Read-only.
+    -->
+    <property name="ModelsLoaded" type="u" access="read"/>
+
+  </interface>
+</node>

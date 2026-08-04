@@ -101,4 +101,57 @@ impl ModelRegistry {
         all.sort_by(|a, b| a.name.cmp(&b.name));
         all
     }
+
+    /// 检查模型是否已加载 (IPC handler 使用)
+    pub fn is_loaded(&self, model_id: &str) -> bool {
+        self.loaded.contains_key(model_id)
+    }
+
+    /// 注册模型 (IPC handler 使用，完整参数)
+    pub fn register_model(
+        &mut self,
+        model_id: String,
+        name: String,
+        path: String,
+        size_mb: u64,
+        architecture: &str,
+    ) -> Result<(), String> {
+        if self.available.contains_key(&model_id) {
+            return Ok(());
+        }
+        let info = ModelInfo {
+            id: model_id.clone(),
+            name,
+            path,
+            size_mb,
+            loaded: false,
+            architecture: architecture.to_string(),
+        };
+        self.available.insert(model_id, info);
+        Ok(())
+    }
+
+    /// 注册模型 (兼容旧签名)
+    pub fn register_model_simple(&mut self, model_id: &str, model_path: &str, framework: &str) -> Result<(), String> {
+        if self.available.contains_key(model_id) {
+            return Ok(());
+        }
+        let path_obj = std::path::Path::new(model_path);
+        let file_name = path_obj.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| model_id.to_string());
+        let metadata = std::fs::metadata(model_path).map_err(|e| format!("{}", e))?;
+        let size_mb = metadata.len() / (1024 * 1024);
+
+        let info = ModelInfo {
+            id: model_id.to_string(),
+            name: file_name,
+            path: model_path.to_string(),
+            size_mb,
+            loaded: false,
+            architecture: framework.to_string(),
+        };
+        self.available.insert(model_id.to_string(), info);
+        Ok(())
+    }
 }

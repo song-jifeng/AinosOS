@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "ai-code-review"
+version = "1.0.0"
+description = "Comprehensive AI-powered code review tool with AST-based static analysis"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "AinosOS Team" },
+]
+requires-python = ">=3.12"
+dependencies = []
+optional-dependencies = {
+    github = ["requests>=2.28.0"],
+    gitlab = ["requests>=2.28.0"],
+    all = ["requests>=2.28.0"],
+}
+
+[project.urls]
+homepage = "https://github.com/ainos/ai-code-review"
+repository = "https://github.com/ainos/ai-code-review"
+
+[project.scripts]
+ai-code-review = "ai_code_review:main"
+
+[tool.setuptools.packages.find]
+include = ["ai_code_review*", "rules*"]
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*", "check_*"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["ai_code_review", "rules"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

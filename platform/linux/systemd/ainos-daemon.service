@@ -1,0 +1,170 @@
+# AinosOS - AI Daemon Systemd Service Unit
+# Copyright (C) 2024 AinosOS Developers
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# Install:
+#   cp ainos-daemon.service /etc/systemd/system/
+#   cp ainos-daemon.sysusers /usr/lib/sysusers.d/
+#   cp ainos-daemon.tmpfiles /usr/lib/tmpfiles.d/
+#   systemd-sysusers
+#   systemd-tmpfiles --create
+#   systemctl daemon-reload
+#   systemctl enable --now ainos-daemon
+#
+# Environment variables (override defaults):
+#   AINOS_DAEMON_MEMORY_MAX   - Max memory (e.g. "8G", "4G", "512M")
+#   AINOS_DAEMON_CPU_QUOTA    - CPU quota (e.g. "80%", "200%", "400%")
+#   AINOS_DAEMON_NICE         - Nice level (default: 10)
+#   AINOS_DAEMON_CONFIG       - Path to config file
+#   AINOS_DAEMON_IO_CLASS     - IO scheduling class (2=idle, 3=idle)
+# ============================================================================
+
+[Unit]
+Description=AinosOS AI Daemon - Native AI System Service
+Documentation=https://github.com/ainos-os/docs
+Documentation=man:ainos-daemon(8)
+Wants=network.target network-online.target
+After=network.target network-online.target local-fs.target time-set.target
+BindsTo=ainos-cgroups.slice
+
+[Service]
+# ============================================================================
+# Process Type & Lifecycle
+# ============================================================================
+Type=notify
+NotifyAccess=main
+ExecStartPre=/usr/bin/ainos-daemon-precheck
+ExecStart=/usr/lib/ainos/ainos-daemon --config ${AINOS_DAEMON_CONFIG:-/etc/ainos/ainos-daemon.conf}
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStop=/bin/kill -TERM $MAINPID
+ExecStopPost=/usr/bin/ainos-daemon-poststop
+TimeoutStartSec=30s
+TimeoutStopSec=45s
+TimeoutSec=45s
+SendSIGKILL=no
+WatchdogSec=30
+
+# ============================================================================
+# User & Security
+# ============================================================================
+User=ainos
+Group=ainos
+DynamicUser=no
+SupplementaryGroups=ainos-gpu ainos-accel render video
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_SYS_NICE CAP_IPC_LOCK
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+SecureBits=keep-caps
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+PrivateTmp=true
+PrivateDevices=no
+PrivateNetwork=no
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=no
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# ============================================================================
+# File System Access
+# ============================================================================
+ReadWritePaths=/var/lib/ainos /var/log/ainos /var/run/ainos
+ReadOnlyPaths=/etc/ainos
+BindPaths=/dev/dri:/dev/dri
+BindReadOnlyPaths=/sys/class/thermal
+
+# ============================================================================
+# Resource Limits
+# ============================================================================
+# Memory limit (override via AINOS_DAEMON_MEMORY_MAX env var)
+MemoryMax=${AINOS_DAEMON_MEMORY_MAX:-8G}
+MemoryHigh=7G
+MemorySwapMax=1G
+MemoryAccounting=yes
+
+# CPU limit (override via AINOS_DAEMON_CPU_QUOTA env var)
+CPUQuota=${AINOS_DAEMON_CPU_QUOTA:-80%}
+CPUAccounting=yes
+CPUWeight=500
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=99
+
+# IO limits
+IOAccounting=yes
+IOWeight=500
+IODeviceWeight= /dev/nvme0n1 500
+IOReadBandwidthMax=/dev/nvme0n1 500M
+IOWriteBandwidthMax=/dev/nvme0n1 200M
+
+# Tasks limit
+TasksMax=512
+
+# File descriptor limits
+LimitNOFILE=65536
+LimitNPROC=512
+LimitMEMLOCK=1G
+LimitCORE=0
+LimitRTPRIO=10
+LimitRTTIME=infinity
+
+# ============================================================================
+# Process Scheduling
+# ============================================================================
+# Nice level for AI tasks (lower priority to avoid starving interactive apps)
+Nice=${AINOS_DAEMON_NICE:-10}
+# IO scheduling class: 0=noop, 1=realtime, 2=best-effort, 3=idle
+IOSchedulingClass=${AINOS_DAEMON_IO_CLASS:-2}
+IOSchedulingPriority=7
+
+# ============================================================================
+# OOM / Error Handling
+# ============================================================================
+Restart=on-failure
+RestartSec=5s
+RestartSteps=3
+RestartMaxDelaySec=30s
+StartLimitIntervalSec=60s
+StartLimitBurst=6
+StartLimitAction=reboot-force
+
+# ============================================================================
+# Logging
+# ============================================================================
+StandardOutput=journal
+StandardError=journal
+StandardInput=null
+SyslogIdentifier=ainos-daemon
+SyslogFacility=daemon
+SyslogLevel=info
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=100
+
+# ============================================================================
+# Environment
+# ============================================================================
+Environment=RUST_LOG=info,ainos=debug
+Environment=AINOS_HOME=/var/lib/ainos
+Environment=AINOS_CONFIG_DIR=/etc/ainos
+Environment=AINOS_DATA_DIR=/var/lib/ainos/data
+Environment=AINOS_LOG_DIR=/var/log/ainos
+Environment=AINOS_RUNTIME_DIR=/var/run/ainos
+Environment=RUST_BACKTRACE=1
+Environment=TZ=:/etc/localtime
+
+[Install]
+WantedBy=multi-user.target

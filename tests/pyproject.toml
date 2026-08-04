@@ -1,0 +1,38 @@
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+norecursedirs = ["*.egg", ".git", "build", "dist", "node_modules", "__pycache__"]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+markers = [
+    "kernel: Kernel module tests (C code)",
+    "runtime: Runtime component tests",
+    "sdk: SDK consistency tests",
+    "integration: End-to-end integration tests",
+    "stress: Stress and load tests",
+    "benchmark: Performance benchmarks",
+    "slow: Tests that take longer than 30 seconds",
+    "smoke: Quick smoke tests for CI pre-commit",
+    "flaky: Tests known to be flaky",
+]
+
+[tool.coverage.run]
+source = ["ainos"]
+omit = ["tests/*", "**/test_*"]
+data_file = ".coverage"
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.",
+    "raise NotImplementedError",
+    "return NotImplemented",
+]
+fail_under = 80

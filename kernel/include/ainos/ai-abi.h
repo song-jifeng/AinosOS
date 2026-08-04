@@ -137,6 +137,68 @@ struct ai_context_entry {
 };
 
 /* ============================================
+ * Embedding 系统调用参数
+ * ============================================ */
+#define AI_EMBEDDING_DIM_128   128
+#define AI_EMBEDDING_DIM_256   256
+#define AI_EMBEDDING_DIM_512   512
+#define AI_EMBEDDING_DIM_768   768
+#define AI_EMBEDDING_DIM_1024  1024
+#define AI_EMBEDDING_DIM_2048  2048
+#define AI_EMBEDDING_DIM_4096  4096
+
+struct ai_embedding_req {
+    const float __user *input;
+    uint64_t input_len;
+    float __user *embedding;
+    uint64_t embedding_dim;
+};
+
+/* ============================================
+ * Semantic Search 系统调用参数
+ * ============================================ */
+struct ai_search_req {
+    const float __user *query_emb;
+    uint64_t query_dim;
+    const float __user *database;
+    uint64_t db_size;
+    uint64_t vector_dim;
+    uint32_t top_k;
+    struct ai_search_result __user *results;
+};
+
+/* ============================================
+ * Model Load 参数
+ * ============================================ */
+#define AI_MODEL_NAME_MAX 64
+#define AI_MODEL_PATH_MAX 512
+
+struct ai_model_load_req {
+    char name[AI_MODEL_NAME_MAX];
+    char path[AI_MODEL_PATH_MAX];
+};
+
+/* ============================================
+ * Context Store/Retrieve 系统调用参数
+ * ============================================ */
+struct ai_context_store_req {
+    uint64_t session_id;
+    char key[AI_CONTEXT_KEY_MAX];
+    const char __user *value;
+    uint64_t value_len;
+    uint64_t ttl_ms;
+};
+
+struct ai_context_retrieve_req {
+    uint64_t session_id;
+    char key[AI_CONTEXT_KEY_MAX];
+    uint64_t entry_id;
+    char __user *value;
+    uint64_t value_capacity;
+    uint64_t __user *value_len;
+};
+
+/* ============================================
  * IOCTL 命令 (用于 /dev/ainos 设备)
  * ============================================ */
 #define AI_IOC_MAGIC  'A'

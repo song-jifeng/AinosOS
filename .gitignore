@@ -44,3 +44,19 @@ userland/sdk/build/
 
 # Config with secrets (keep template)
 configs/*.local.toml
+
+# Node.js
+node_modules/
+
+# Java build
+*.class
+*.jar
+target/
+
+# .NET build
+bin/
+obj/
+*.nupkg
+
+# Go build
+*.exe

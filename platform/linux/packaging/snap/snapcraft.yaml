@@ -1,0 +1,345 @@
+# ============================================================================
+# AinosOS - Snap Package Configuration
+# Copyright (C) 2024 AinosOS Developers
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Snap package configuration for the AinosOS AI Daemon.
+# Uses strict confinement with explicitly declared interfaces.
+#
+# Build:
+#   snapcraft
+#
+# Install:
+#   sudo snap install ainos-daemon_*.snap --dangerous
+#
+# Test:
+#   ainos-daemon.status
+#   ainos-daemon.infer --model default --prompt "Hello"
+# ============================================================================
+
+name: ainos-daemon
+base: core22
+version: "1.0.0"
+summary: AinosOS AI Daemon - Native AI System Service
+description: |
+  The AinosOS AI Daemon provides AI inference, model lifecycle management,
+  context storage, and system monitoring capabilities. It supports local
+  GGML/ONNX inference with cloud API fallback, thermal-aware power policy
+  scheduling, and D-Bus integration for system-level AI services.
+
+  Key features:
+  - Local inference via GGML/ONNX engines
+  - Cloud API fallback (OpenAI-compatible endpoints)
+  - Context management with LRU caching and SQLite persistence
+  - Thermal-aware power policy scheduling
+  - D-Bus interface (com.ainos.Daemon1)
+  - cgroups v2 resource management
+  - Semantic caching of inference results
+
+grade: stable
+confinement: strict
+compression: lzo
+
+# ============================================================================
+# Architectures
+# ============================================================================
+architectures:
+  - build-on: amd64
+    run-on: amd64
+
+# ============================================================================
+# Apps
+# ============================================================================
+
+apps:
+  daemon:
+    command: bin/ainos-daemon --config $SNAP_DATA/etc/ainos-daemon.conf
+    daemon: simple
+    daemon-notify: true
+    restart-condition: on-failure
+    stop-command: bin/ainos-daemon-stop
+    post-stop-command: bin/ainos-daemon-poststop
+
+    # Plugs (interfaces the daemon uses)
+    plugs:
+      - network
+      - network-bind
+      - network-control
+      - process-control
+      - system-observe
+      - hardware-observe
+      - thermal
+      - shmem
+      - dbus
+      - dbus-system
+      - log-observe
+      - mount-observe
+      - gpio
+      - i2c
+      - spi
+      - docker
+      - docker-privileged
+
+    # Slots (interfaces the daemon provides)
+    slots:
+      - ainos-dbus
+
+    # Environment
+    environment:
+      RUST_LOG: "${RUST_LOG:-info,ainos=debug}"
+      AINOS_HOME: "${SNAP_COMMON}"
+      AINOS_CONFIG_DIR: "${SNAP_DATA}/etc"
+      AINOS_DATA_DIR: "${SNAP_COMMON}/data"
+      AINOS_LOG_DIR: "${SNAP_COMMON}/logs"
+      AINOS_RUNTIME_DIR: "${SNAP_DATA}/run"
+      AINOS_MODELS_DIR: "${SNAP_COMMON}/models"
+      SSL_CERT_FILE: "${SNAP}/usr/lib/ssl/cert.pem"
+
+  # CLI tools
+  infer:
+    command: bin/ainos-infer
+    plugs: [network, ainos-dbus]
+
+  status:
+    command: bin/ainos-status
+    plugs: [network, ainos-dbus]
+
+  model:
+    command: bin/ainos-model
+    plugs: [network, ainos-dbus]
+
+  # Development tools
+  dbus-introspect:
+    command: bin/ainos-dbus-introspect
+    plugs: [network, ainos-dbus]
+
+  # Log viewer
+  logs:
+    command: bin/journalctl
+    plugs: [log-observe]
+
+# ============================================================================
+# Plugs (interfaces consumed from other snaps / system)
+# ============================================================================
+
+plugs:
+  # Network access for cloud API
+  network:
+    interface: network
+
+  # Bind to TCP ports for IPC
+  network-bind:
+    interface: network-bind
+
+  # Network configuration inspection
+  network-control:
+    interface: network-control
+
+  # Process management (nice, ionice, cgroups)
+  process-control:
+    interface: process-control
+
+  # System-wide observation (CPU, memory, thermal)
+  system-observe:
+    interface: system-observe
+
+  # Hardware devices (GPUs, accelerators)
+  hardware-observe:
+    interface: hardware-observe
+
+  # Thermal sensors
+  thermal:
+    interface: thermal
+
+  # Shared memory for IPC
+  shmem:
+    interface: shared-memory
+
+  # D-Bus system bus access
+  dbus-system:
+    interface: dbus
+    bus: system
+    name: com.ainos.Daemon1
+
+  # Log observation
+  log-observe:
+    interface: log-observe
+
+  # Mount observation
+  mount-observe:
+    interface: mount-observe
+
+  # GPIO access (for hardware sensors)
+  gpio:
+    interface: gpio
+
+  # Docker access (for running inference containers)
+  docker:
+    interface: docker
+
+  # Docker privileged (for GPU access)
+  docker-privileged:
+    interface: docker-privileged
+
+# ============================================================================
+# Slots (interfaces provided to other snaps)
+# ============================================================================
+
+slots:
+  ainos-dbus:
+    interface: dbus
+    bus: system
+    name: com.ainos.Daemon1
+
+# ============================================================================
+# Parts (how to build each component)
+# ============================================================================
+
+parts:
+  # ==========================================================================
+  # AI Daemon binary
+  # ==========================================================================
+  daemon:
+    plugin: rust
+    source: ../../..
+    source-subdir: system-services/ai-daemon
+    build-packages:
+      - pkg-config
+      - libssl-dev
+      - cmake
+      - g++
+    stage-packages:
+      - libssl3
+      - ca-certificates
+      - libstd-rust-???
+    organize:
+      target/release/ai-daemon: bin/ainos-daemon
+
+  # ==========================================================================
+  # CLI tools
+  # ==========================================================================
+  cli-tools:
+    plugin: dump
+    source: .
+    organize:
+      bin/ainos-infer: bin/ainos-infer
+      bin/ainos-status: bin/ainos-status
+      bin/ainos-model: bin/ainos-model
+      bin/ainos-dbus-introspect: bin/ainos-dbus-introspect
+      bin/ainos-daemon-stop: bin/ainos-daemon-stop
+      bin/ainos-daemon-poststop: bin/ainos-daemon-poststop
+    stage:
+      - bin/*
+
+  # ==========================================================================
+  # Default configuration
+  # ==========================================================================
+  config:
+    plugin: dump
+    source: ../../../configs
+    organize:
+      ai-daemon.toml: etc/ainos-daemon.conf
+    stage:
+      - etc/ainos-daemon.conf
+
+  # ==========================================================================
+  # D-Bus interface
+  # ==========================================================================
+  dbus-interface:
+    plugin: dump
+    source: ../../dbus
+    organize:
+      ainos-dbus.xml: share/dbus-1/interfaces/com.ainos.Daemon1.xml
+    stage:
+      - share/dbus-1/interfaces/com.ainos.Daemon1.xml
+
+  # ==========================================================================
+  # udev rules (for hardware access)
+  # ==========================================================================
+  udev-rules:
+    plugin: dump
+    source: ../../udev
+    organize:
+      99-ainos.rules: etc/udev/rules.d/99-ainos.rules
+    stage:
+      - etc/udev/rules.d/99-ainos.rules
+
+# ============================================================================
+# Layout (filesystem layout within the snap)
+# ============================================================================
+
+layout:
+  # Make /etc/ainos point to snap data
+  /etc/ainos:
+    bind: $SNAP_DATA/etc
+
+  # Make /var/lib/ainos point to snap common data
+  /var/lib/ainos:
+    bind: $SNAP_COMMON
+
+  # Make /var/log/ainos point to snap common logs
+  /var/log/ainos:
+    bind: $SNAP_COMMON/logs
+
+  # Make /var/run/ainos point to snap data runtime
+  /var/run/ainos:
+    bind: $SNAP_DATA/run
+
+# ============================================================================
+# Hooks
+# ============================================================================
+
+hooks:
+  # Install hook: create directories and set up
+  install: |
+    #!/bin/sh
+    mkdir -p $SNAP_DATA/etc
+    mkdir -p $SNAP_DATA/run
+    mkdir -p $SNAP_COMMON/data
+    mkdir -p $SNAP_COMMON/logs
+    mkdir -p $SNAP_COMMON/models
+    mkdir -p $SNAP_COMMON/cache
+    # Copy default config if not present
+    if [ ! -f $SNAP_DATA/etc/ainos-daemon.conf ]; then
+      cp $SNAP/etc/ainos-daemon.conf $SNAP_DATA/etc/
+    fi
+
+  # Configure hook: re-read configuration
+  configure: |
+    #!/bin/sh
+    # Re-read configuration (send SIGHUP to daemon)
+    if [ -f $SNAP_DATA/run/ainos-daemon.pid ]; then
+      PID=$(cat $SNAP_DATA/run/ainos-daemon.pid)
+      kill -HUP $PID 2>/dev/null || true
+    fi
+
+  # Pre-refresh hook: stop daemon before upgrade
+  pre-refresh: |
+    #!/bin/sh
+    if snapctl is-active ainos-daemon; then
+      snapctl stop ainos-daemon
+    fi
+
+  # Post-refresh hook: start daemon after upgrade
+  post-refresh: |
+    #!/bin/sh
+    if snapctl services ainos-daemon | grep -q disabled; then
+      snapctl start ainos-daemon
+    fi
+
+# ============================================================================
+# Security
+# ============================================================================
+
+# Systemd integration
+systemd:
+  services:
+    ainos-daemon:
+      description: "AinosOS AI Daemon"
+      wants:
+        - network.target
+        - network-online.target
+      after:
+        - network.target
+        - network-online.target
+        - snapd.apparmor.service

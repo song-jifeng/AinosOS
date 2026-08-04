@@ -1,0 +1,37 @@
+# AinosOS - System Users for AI Daemon
+# Copyright (C) 2024 AinosOS Developers
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# This file defines system users and groups for the AinosOS AI Daemon.
+# It is used by systemd-sysusers(8) to create the necessary accounts.
+#
+# Format:
+#   u  name        id  gecos                          home-dir
+#   g  name        id  gecos
+#   m  user        group
+#
+# Reference: sysusers.d(5)
+#
+# Install:
+#   cp ainos-daemon.sysusers /usr/lib/sysusers.d/ainos-daemon.conf
+#   systemd-sysusers
+# ============================================================================
+
+# Type  User          ID          GECOS                 Home directory
+u      ainos          -           "AinosOS Daemon"      /var/lib/ainos
+u      ainos-gpu      -           "AinosOS GPU Access"  /var/run/ainos-gpu
+u      ainos-accel    -           "AinosOS Accelerator" /var/run/ainos-accel
+
+# Type  Group         ID          GECOS
+g      ainos          -           "AinosOS Daemon Group"
+g      ainos-gpu      -           "AinosOS GPU Access Group"
+g      ainos-accel    -           "AinosOS Accelerator Access Group"
+
+# Type  User          Group
+m      ainos          ainos
+m      ainos-gpu      ainos-gpu
+m      ainos-accel    ainos-accel
+m      ainos          ainos-gpu
+m      ainos          ainos-accel
+m      ainos          render
+m      ainos          video

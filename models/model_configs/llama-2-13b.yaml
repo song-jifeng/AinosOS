@@ -1,0 +1,202 @@
+# ============================================================
+# Model Configuration
+# ============================================================
+model:
+  name: "Llama 2 13B"
+  family: "llama"
+  architecture: "decoder-only"
+  version: "2.0"
+  description: "Meta's Llama 2 large language model with 13 billion parameters, optimized for dialog use cases"
+
+# ============================================================
+# Source Information
+# ============================================================
+source:
+  huggingface_repo: "meta-llama/Llama-2-13b-hf"
+  default_branch: "main"
+  license: "llama2"
+  paper_url: "https://arxiv.org/abs/2307.09288"
+  author: "Meta AI"
+
+# ============================================================
+# Architecture Details
+# ============================================================
+architecture:
+  num_layers: 40
+  num_attention_heads: 40
+  num_kv_heads: 40
+  hidden_size: 5120
+  intermediate_size: 13824
+  vocab_size: 32000
+  max_position_embeddings: 4096
+  normalization: "RMSNorm"
+  activation_function: "SiLU"
+  attention_type: "multi-head-attention"
+  positional_encoding: "RoPE"
+  feed_forward: "SwiGLU"
+  embedding_dim: 5120
+  head_dim: 128
+  rope_theta: 10000.0
+  rope_scaling: null
+  tie_word_embeddings: false
+  weight_tying: false
+
+# ============================================================
+# Model Dimensions
+# ============================================================
+dimensions:
+  total_params: "13B"
+  non_embedding_params: "12.6B"
+  embedding_params: "0.4B"
+  model_size_gb: 26.0
+  quantized_sizes:
+    q4_0: 7.8
+    q4_1: 8.6
+    q5_0: 9.5
+    q5_1: 10.3
+    q8_0: 13.5
+    f16: 26.0
+
+# ============================================================
+# Default Quantization
+# ============================================================
+quantization:
+  default: "Q4_0"
+  supported:
+    - "Q4_0"
+    - "Q4_1"
+    - "Q5_0"
+    - "Q5_1"
+    - "Q8_0"
+    - "F16"
+  recommended: "Q5_0"
+  performance_rank:
+    Q4_0: "fastest, lowest quality"
+    Q4_1: "slightly better quality than Q4_0"
+    Q5_0: "good balance of quality and speed"
+    Q5_1: "better quality than Q5_0"
+    Q8_0: "near-lossless"
+    F16: "lossless"
+
+# ============================================================
+# Recommended Parameters
+# ============================================================
+parameters:
+  inference:
+    temperature: 0.6
+    top_p: 0.9
+    top_k: 40
+    repetition_penalty: 1.1
+    max_tokens: 2048
+    stop_sequences: []
+  context_length: 4096
+  batch_size: 1
+  threads: 4
+  gpu_layers: 0
+
+# ============================================================
+# Memory Requirements
+# ============================================================
+memory:
+  minimum_ram_gb: 16
+  recommended_ram_gb: 32
+  minimum_vram_gb: 12
+  recommended_vram_gb: 24
+  swap_gb: 8
+  disk_space_gb: 40
+  breakdown:
+    model_weights_gb: 26.0
+    kv_cache_gb: 3.0
+    overhead_gb: 2.0
+
+# ============================================================
+# Performance Benchmarks
+# ============================================================
+benchmarks:
+  inference_speed:
+    cpu:
+      q4_0: { tokens_per_second: 15, prompt_processing: "10s for 512 tokens" }
+      q8_0: { tokens_per_second: 9, prompt_processing: "15s for 512 tokens" }
+      f16: { tokens_per_second: 4, prompt_processing: "28s for 512 tokens" }
+    gpu:
+      q4_0: { tokens_per_second: 60, prompt_processing: "2s for 512 tokens" }
+      q8_0: { tokens_per_second: 45, prompt_processing: "3s for 512 tokens" }
+      f16: { tokens_per_second: 30, prompt_processing: "4s for 512 tokens" }
+  memory_usage:
+    cpu:
+      q4_0: { peak_ram_gb: 10, steady_ram_gb: 8 }
+      q8_0: { peak_ram_gb: 16, steady_ram_gb: 13.5 }
+      f16: { peak_ram_gb: 28, steady_ram_gb: 26 }
+    gpu:
+      q4_0: { peak_vram_gb: 8, peak_ram_gb: 3 }
+      q8_0: { peak_vram_gb: 14, peak_ram_gb: 3 }
+      f16: { peak_vram_gb: 26, peak_ram_gb: 3 }
+
+# ============================================================
+# Conversion Options
+# ============================================================
+conversion:
+  supported_formats:
+    - "gguf"
+    - "onnx"
+  default_format: "gguf"
+  quantization_types:
+    - "q4_0"
+    - "q4_1"
+    - "q5_0"
+    - "q5_1"
+    - "q8_0"
+    - "f16"
+  optimization_options:
+    fuse_attention: true
+    fuse_ffn: true
+    prune_unused: false
+  gguf_metadata:
+    model_type: "llama"
+    file_version: 3
+    tensor_data_layout: "default"
+
+# ============================================================
+# Hardware Requirements
+# ============================================================
+hardware:
+  minimum:
+    cpu: "x86_64, 4 cores"
+    ram: "16 GB"
+    disk: "SSD, 40 GB free"
+  recommended:
+    cpu: "x86_64, 8 cores with AVX2"
+    ram: "32 GB"
+    gpu: "NVIDIA RTX 3090 24GB or better"
+    disk: "NVMe SSD, 80 GB free"
+  supported_backends:
+    - "cpu"
+    - "cuda"
+    - "vulkan"
+    - "metal"
+
+# ============================================================
+# Dependencies
+# ============================================================
+dependencies:
+  required:
+    - "torch>=2.0.0"
+    - "numpy>=1.24.0"
+    - "safetensors>=0.3.0"
+  optional:
+    - "xformers>=0.0.20"
+    - "flash-attn>=2.0.0"
+    - "transformers>=4.30.0"
+    - "accelerate>=0.20.0"
+
+# ============================================================
+# Registry Metadata
+# ============================================================
+registry:
+  tags: ["llm", "text-generation", "meta"]
+  category: "text-generation"
+  tasks: ["text-generation", "conversational"]
+  languages: ["en"]
+  featured: true
+  created: "2023-07-18"
+  updated: "2024-06-01"

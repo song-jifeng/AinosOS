@@ -71,6 +71,9 @@ static const int queue_capacity[] = {
  * 数据结构
  * ============================================ */
 
+/* 任务跟踪表大小 */
+#define AI_TASK_TRACK_SIZE 2048
+
 /* AI 推理任务 */
 struct ai_task {
     struct list_head node;           /* 队列节点 */
@@ -92,6 +95,9 @@ struct ai_task {
     struct pid *pid;                 /* 发起进程 PID */
     struct task_struct *task;        /* 发起进程 task_struct */
     struct completion done;          /* 完成通知 */
+
+    /* 是否为异步任务 */
+    bool is_async;                   /* 异步提交的任务 */
 };
 
 /* 优先级队列 */
@@ -131,6 +137,16 @@ struct ai_scheduler {
     /* 看门狗 */
     struct delayed_work watchdog_work;
 
+    /* ========== 任务跟踪表 ========== */
+    /* 用于 ai_sched_query 查找已完成/运行中的异步任务 */
+    struct {
+        uint64_t task_id;
+        enum ai_task_status status;
+        struct ai_inference_resp resp;
+        bool in_use;
+    } task_track[AI_TASK_TRACK_SIZE];
+    spinlock_t task_track_lock;
+
     /* ========== 电源策略调度 ========== */
     enum ai_power_mode power_mode;          /* 当前电源策略模式 */
     uint32_t cpu_temp;                      /* 当前 CPU 温度 (毫摄氏度) */
@@ -166,6 +182,79 @@ static inline int priority_to_queue(enum ai_task_priority prio)
 static inline uint64_t alloc_task_id(void)
 {
     return (uint64_t)atomic64_inc_return(&g_sched->next_task_id);
+}
+
+/* ============================================
+ * 任务跟踪表操作
+ * ============================================ */
+
+/* 向跟踪表添加任务记录 */
+static void task_track_add(uint64_t task_id, enum ai_task_status status,
+                            struct ai_inference_resp *resp)
+{
+    unsigned long flags;
+    int i;
+
+    spin_lock_irqsave(&g_sched->task_track_lock, flags);
+
+    /* 更新已存在的记录 */
+    for (i = 0; i < AI_TASK_TRACK_SIZE; i++) {
+        if (g_sched->task_track[i].in_use &&
+            g_sched->task_track[i].task_id == task_id) {
+            g_sched->task_track[i].status = status;
+            g_sched->task_track[i].resp = *resp;
+            spin_unlock_irqrestore(&g_sched->task_track_lock, flags);
+            return;
+        }
+    }
+
+    /* 查找空槽 */
+    for (i = 0; i < AI_TASK_TRACK_SIZE; i++) {
+        if (!g_sched->task_track[i].in_use) {
+            g_sched->task_track[i].task_id = task_id;
+            g_sched->task_track[i].status = status;
+            g_sched->task_track[i].resp = *resp;
+            g_sched->task_track[i].in_use = true;
+            spin_unlock_irqrestore(&g_sched->task_track_lock, flags);
+            return;
+        }
+    }
+
+    /* 表满，覆盖最早的记录 (循环覆盖) */
+    {
+        static unsigned int track_evict_idx = 0;
+        g_sched->task_track[track_evict_idx].task_id = task_id;
+        g_sched->task_track[track_evict_idx].status = status;
+        g_sched->task_track[track_evict_idx].resp = *resp;
+        g_sched->task_track[track_evict_idx].in_use = true;
+        track_evict_idx = (track_evict_idx + 1) % AI_TASK_TRACK_SIZE;
+    }
+
+    spin_unlock_irqrestore(&g_sched->task_track_lock, flags);
+}
+
+/* 从跟踪表查询任务，查询后移除记录 */
+static int task_track_query(uint64_t task_id, struct ai_inference_resp *resp)
+{
+    unsigned long flags;
+    int i;
+
+    spin_lock_irqsave(&g_sched->task_track_lock, flags);
+
+    for (i = 0; i < AI_TASK_TRACK_SIZE; i++) {
+        if (g_sched->task_track[i].in_use &&
+            g_sched->task_track[i].task_id == task_id) {
+            *resp = g_sched->task_track[i].resp;
+            resp->status = g_sched->task_track[i].status;
+            /* 查询后移除记录 */
+            g_sched->task_track[i].in_use = false;
+            spin_unlock_irqrestore(&g_sched->task_track_lock, flags);
+            return 0;
+        }
+    }
+
+    spin_unlock_irqrestore(&g_sched->task_track_lock, flags);
+    return -AI_ERR_INVALID_PARAM;
 }
 
 /* ============================================
@@ -332,6 +421,14 @@ static int ai_worker_thread(void *data)
         /* 通知等待者 */
         complete_all(&task->done);
 
+        /* 异步任务：添加到跟踪表并释放 */
+        if (task->is_async) {
+            task_track_add(task->task_id, AI_TASK_COMPLETED, &task->resp);
+            if (task->pid)
+                put_pid(task->pid);
+            kfree(task);
+        }
+
         worker->current_task = NULL;
         atomic_set(&worker->busy, 0);
     }
@@ -365,6 +462,15 @@ static void watchdog_callback(struct work_struct *work)
                 task->resp.status = AI_TASK_FAILED;
                 complete_all(&task->done);
                 atomic64_inc(&g_sched->total_tasks_timeout);
+
+                /* 异步任务：添加到跟踪表并释放 */
+                if (task->is_async) {
+                    task_track_add(task->task_id, AI_TASK_FAILED, &task->resp);
+                    if (task->pid)
+                        put_pid(task->pid);
+                    kfree(task);
+                }
+
                 atomic_set(&worker->busy, 0);
                 worker->current_task = NULL;
             }
@@ -571,9 +677,12 @@ int ai_sched_submit_async(struct ai_inference_req *req,
     task->pid = get_pid(task_task(current));
     task->task = current;
     init_completion(&task->done);
+    task->is_async = true;  /* 标记为异步任务 */
 
     ret = enqueue_task(task);
     if (ret) {
+        if (task->pid)
+            put_pid(task->pid);
         kfree(task);
         return ret;
     }
@@ -585,8 +694,59 @@ int ai_sched_submit_async(struct ai_inference_req *req,
 /* 查询任务状态 */
 int ai_sched_query(uint64_t task_id, struct ai_inference_resp *resp)
 {
-    /* 此时任务可能还在运行，由 AI Runtime 完成 */
-    return -AI_ERR_NOT_SUPPORTED;
+    struct ai_task *task;
+    unsigned long flags;
+    int i;
+
+    if (!g_sched || !g_sched->running)
+        return -AI_ERR_GENERAL;
+
+    if (!resp)
+        return -AI_ERR_INVALID_PARAM;
+
+    memset(resp, 0, sizeof(*resp));
+
+    /* 1. 检查任务跟踪表 (已完成或已失败的异步任务) */
+    if (task_track_query(task_id, resp) == 0)
+        return 0;
+
+    /* 2. 检查优先级队列 (等待中的任务) */
+    for (i = 0; i <= AI_PRIO_REALTIME; i++) {
+        struct ai_priority_queue *pq = &g_sched->queues[i];
+
+        if (atomic_read(&pq->count) == 0)
+            continue;
+
+        spin_lock_irqsave(&pq->lock, flags);
+        list_for_each_entry(task, &pq->queue, node) {
+            if (task->task_id == task_id) {
+                *resp = task->resp;
+                resp->status = task->status;
+                resp->task_id = task->task_id;
+                spin_unlock_irqrestore(&pq->lock, flags);
+                return 0;
+            }
+        }
+        spin_unlock_irqrestore(&pq->lock, flags);
+    }
+
+    /* 3. 检查工作线程 (运行中的任务) */
+    for (i = 0; i < AI_SCHED_THREAD_POOL; i++) {
+        struct ai_worker *worker = &g_sched->workers[i];
+
+        if (atomic_read(&worker->busy) && worker->current_task) {
+            task = worker->current_task;
+            if (task->task_id == task_id) {
+                *resp = task->resp;
+                resp->status = task->status;
+                resp->task_id = task->task_id;
+                return 0;
+            }
+        }
+    }
+
+    /* 4. 未找到 */
+    return -AI_ERR_INVALID_PARAM;
 }
 
 /* 取消任务 */
@@ -671,6 +831,10 @@ static int __init ai_scheduler_init(void)
     atomic64_set(&g_sched->total_tasks_completed, 0);
     atomic64_set(&g_sched->total_tasks_failed, 0);
     atomic64_set(&g_sched->total_tasks_timeout, 0);
+
+    /* 初始化任务跟踪表 */
+    spin_lock_init(&g_sched->task_track_lock);
+    memset(g_sched->task_track, 0, sizeof(g_sched->task_track));
 
     /* 初始化电源策略 */
     mutex_init(&g_sched->thermal_lock);

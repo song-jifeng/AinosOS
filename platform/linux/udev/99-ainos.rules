@@ -1,0 +1,100 @@
+# AinosOS - udev Rules for AI Daemon Device Access
+# Copyright (C) 2024 AinosOS Developers
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# These rules grant the ainos user and group access to hardware devices
+# required for AI inference: GPUs, AI accelerators, and thermal sensors.
+#
+# Reload rules:
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#
+# Verify:
+#   udevadm info -a -p /sys/class/drm/card0
+#   udevadm test $(udevadm info -q path -n /dev/dri/card0)
+# ============================================================================
+
+# ============================================================================
+# GPU Devices (Intel, AMD, NVIDIA)
+# ============================================================================
+
+# Render nodes (DRI) — grant ainos and render group access
+SUBSYSTEM=="drm", KERNEL=="renderD*", GROUP="render", MODE="0660", TAG+="uaccess"
+
+# Card devices (DRI)
+SUBSYSTEM=="drm", KERNEL=="card*", GROUP="video", MODE="0660", TAG+="uaccess"
+
+# NVIDIA GPU device nodes
+SUBSYSTEM=="nvidia", KERNEL=="nvidia*", GROUP="video", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="nvidia", KERNEL=="nvidia-caps", GROUP="video", MODE="0660", TAG+="uaccess"
+
+# NVIDIA Control Device
+SUBSYSTEM=="nvidia", KERNEL=="nvidiactl", GROUP="video", MODE="0660", TAG+="uaccess"
+
+# AMD GPU (amdgpu)
+SUBSYSTEM=="drm", KERNEL=="card*", ATTRS{vendor}=="0x1002", GROUP="video", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="drm", KERNEL=="renderD*", ATTRS{vendor}=="0x1002", GROUP="render", MODE="0660", TAG+="uaccess"
+
+# Intel GPU
+SUBSYSTEM=="drm", KERNEL=="card*", ATTRS{vendor}=="0x8086", GROUP="video", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="drm", KERNEL=="renderD*", ATTRS{vendor}=="0x8086", GROUP="render", MODE="0660", TAG+="uaccess"
+
+# ============================================================================
+# AI Accelerator Devices
+# ============================================================================
+
+# Intel Movidius / Myriad VPU
+SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0660", GROUP="ainos-accel", TAG+="uaccess"
+
+# Google Coral Edge TPU
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a6e", MODE="0660", GROUP="ainos-accel", TAG+="uaccess"
+SUBSYSTEM=="apex", KERNEL=="apex*", MODE="0660", GROUP="ainos-accel", TAG+="uaccess"
+
+# Hailo-8 AI Accelerator
+SUBSYSTEM=="pci", ATTRS{vendor}=="0x1e60", GROUP="ainos-accel", MODE="0660", TAG+="uaccess"
+
+# Intel Habana Gaudi
+SUBSYSTEM=="habanalabs", KERNEL=="habanalabs*", GROUP="ainos-accel", MODE="0660", TAG+="uaccess"
+
+# AMD Ryzen AI (NPU) — xdna driver
+SUBSYSTEM=="accel", KERNEL=="accel*", GROUP="ainos-accel", MODE="0660", TAG+="uaccess"
+
+# ============================================================================
+# Ainos Kernel Module Devices
+# ============================================================================
+
+# Ainos AI-proc kernel module
+KERNEL=="ai-proc", SUBSYSTEM=="misc", GROUP="ainos", MODE="0660"
+
+# Ainos AI-scheduler kernel module
+KERNEL=="ai-scheduler", SUBSYSTEM=="misc", GROUP="ainos", MODE="0660"
+
+# Ainos AI-tmpfs kernel module
+KERNEL=="ai-tmpfs", SUBSYSTEM=="misc", GROUP="ainos", MODE="0660"
+
+# Ainos AI-readahead kernel module
+KERNEL=="ai-readahead", SUBSYSTEM=="misc", GROUP="ainos", MODE="0660"
+
+# ============================================================================
+# Thermal Sensors
+# ============================================================================
+
+# Allow read access to thermal zone for ainos group
+SUBSYSTEM=="thermal", KERNEL=="thermal_zone*", GROUP="ainos", MODE="0440", TAG+="uaccess"
+
+# ============================================================================
+# Shared Memory for Inter-Process Communication
+# ============================================================================
+
+# Ainos IPC socket (udev tag for systemd socket activation)
+KERNEL=="ai-daemon.sock", SUBSYSTEM=="unix", GROUP="ainos", MODE="0660"
+
+# ============================================================================
+# Device Symlinks
+# ============================================================================
+
+# Create persistent symlinks for Ainos devices
+SUBSYSTEM=="drm", KERNEL=="renderD*", PROGRAM="/usr/lib/ainos/ainos-device-id %k", \
+    SYMLINK+="ainos/gpu/%c{1}"
+SUBSYSTEM=="accel", KERNEL=="accel*", PROGRAM="/usr/lib/ainos/ainos-device-id %k", \
+    SYMLINK+="ainos/accel/%c{1}"

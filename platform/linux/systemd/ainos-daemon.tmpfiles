@@ -1,0 +1,53 @@
+# AinosOS - Temporary Files for AI Daemon
+# Copyright (C) 2024 AinosOS Developers
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# This file defines the required directory structure for the AinosOS AI Daemon.
+# It is used by systemd-tmpfiles(8) to create directories with correct
+# permissions at boot time.
+#
+# Format:
+#   d  path           mode  user  group  age  [argument]
+#   L  path           mode  user  group  age  [symlink-target]
+#   z  path           mode  user  group  age  [restore-context]
+#   f  path           mode  user  group  age  [create-file]
+#   p  path           mode  user  group  age  [fifo]
+#   C  src dst        mode  user  group  age  [copy]
+#
+# Reference: tmpfiles.d(5)
+#
+# Install:
+#   cp ainos-daemon.tmpfiles /usr/lib/tmpfiles.d/ainos-daemon.conf
+#   systemd-tmpfiles --create
+# ============================================================================
+
+# Type  Path                    Mode    User  Group  Age   Argument
+
+# Persistent data directory
+d      /var/lib/ainos           0755    ainos ainos  -     -
+d      /var/lib/ainos/models    0755    ainos ainos  -     -
+d      /var/lib/ainos/data      0755    ainos ainos  -     -
+d      /var/lib/ainos/contexts  0755    ainos ainos  -     -
+d      /var/lib/ainos/cache     0755    ainos ainos  -     -
+
+# Log directory
+d      /var/log/ainos           0750    ainos ainos  30d   -
+
+# Runtime directory (cleaned on boot)
+d      /var/run/ainos           0755    ainos ainos  10s   -
+d      /var/run/ainos/sockets   0755    ainos ainos  -     -
+d      /var/run/ainos/state     0755    ainos ainos  -     -
+
+# Configuration directory
+d      /etc/ainos               0755    ainos ainos  -     -
+z      /etc/ainos               0755    ainos ainos  -     -
+
+# Cache directory
+d      /var/cache/ainos         0755    ainos ainos  -     -
+d      /var/cache/ainos/models  0755    ainos ainos  7d    -
+
+# cgroups v2 hierarchy (managed by ainos-cgroups service)
+d      /sys/fs/cgroup/ainos     0755    root root    -     -
+
+# Log rotation notifications
+p      /var/run/ainos/ainos-logrotate.pipe 0600 ainos ainos - -

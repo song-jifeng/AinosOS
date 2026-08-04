@@ -29,3 +29,46 @@ context_ttl_days = 30
 log_level = "debug"
 audit_log = "D:\\Ainos\\logs\\audit.log"
 audit_all_requests = true
+
+# Legacy TLS settings (deprecated, use [tls] section)
+enable_tls = false
+tls_cert_path = "D:\\Ainos\\certs\\server.crt"
+tls_key_path = "D:\\Ainos\\certs\\server.key"
+
+# ============================================
+# Authentication
+# ============================================
+[auth]
+enabled = true
+token = ""  # auto-generated if empty; set a 64-char hex token for persistence
+token_path = "D:\\Ainos\\configs\\auth_token.txt"
+session_ttl_seconds = 3600
+permissions_file = ""
+default_permissions = ["infer", "status", "context"]
+audit_log_path = "D:\\Ainos\\logs\\audit.log"
+audit_all_requests = true
+
+# ============================================
+# Rate Limiting
+# ============================================
+[ratelimit]
+enabled = true
+infer_rps = 100.0
+infer_burst = 200.0
+model_rps = 10.0
+model_burst = 20.0
+status_rps = 1000.0
+status_burst = 2000.0
+admin_rps = 5.0
+admin_burst = 10.0
+max_clients = 1000
+cleanup_interval_secs = 300
+
+# ============================================
+# TLS / Transport Security
+# ============================================
+[tls]
+enabled = false
+cert_path = "D:\\Ainos\\certs\\server.crt"
+key_path = "D:\\Ainos\\certs\\server.key"
+verify_client = false

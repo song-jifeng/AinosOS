@@ -1,37 +1,327 @@
-version: "3.8"
+version: "3.9"
 
+# ============================================================================
+# AinosOS - Docker Compose Configuration
+# ============================================================================
+# Copyright (C) 2024 AinosOS Developers
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Defines the AinosOS AI Daemon service with:
+# - Resource limits (CPU, memory, PID)
+# - Health check configuration
+# - Network configuration
+# - Volume management
+# - Environment variables
+# - GPU acceleration support (NVIDIA, AMD, Intel)
+# ============================================================================
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  ainos-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+    # Allow binding to host ports for IPC
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  # Model storage (persistent across restarts)
+  ainos-models:
+    driver: local
+    name: ainos-models
+    labels:
+      app: ainos-daemon
+      component: models
+
+  # Data directory (contexts, cache, etc.)
+  ainos-data:
+    driver: local
+    name: ainos-data
+    labels:
+      app: ainos-daemon
+      component: data
+
+  # Log file storage
+  ainos-logs:
+    driver: local
+    name: ainos-logs
+    labels:
+      app: ainos-daemon
+      component: logs
+
+  # Configuration (mounted as read-only)
+  ainos-config:
+    driver: local
+    name: ainos-config
+    labels:
+      app: ainos-daemon
+      component: config
+
+# ============================================================================
+# Services
+# ============================================================================
 services:
+  # ==========================================================================
+  # AI Daemon (primary service)
+  # ==========================================================================
   ai-daemon:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+      labels:
+        app: ainos-daemon
+        version: "1.0.0"
+    image: ainos-daemon:latest
     container_name: ainos-daemon
-    ports:
-      - "9500:9500"
-    volumes:
-      - ./models:/var/lib/ainos/models
-      - ./data:/var/lib/ainos/data
-      - ./logs:/var/lib/ainos/logs
-      - ./configs/ai-daemon.toml:/etc/ainos/ai-daemon.toml:ro
-    environment:
-      - RUST_LOG=info,ainos=debug
-      - AINOS_HOME=/var/lib/ainos
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "bash", "-c", "echo '{\"type\":\"Status\"}' | timeout 3 nc 127.0.0.1 9500 || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
 
-  # Web 管理面板（可选，使用 nginx 托管静态页面）
+    # ========================================================================
+    # Resource Limits
+    # ========================================================================
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+          pids: 512
+        reservations:
+          cpus: "1"
+          memory: 1G
+      # Docker Swarm placement constraints (optional)
+      placement:
+        constraints:
+          - node.labels.ainos == true
+          - node.role == worker
+      # Update configuration
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        max_failure_ratio: 0.3
+      # Restart policy
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 60s
+
+    # ========================================================================
+    # Ports (IPC)
+    # ========================================================================
+    ports:
+      # Main TCP IPC port (bind to localhost only for security)
+      - "127.0.0.1:9500:9500/tcp"
+      # Web panel port (optional, only if web server is enabled)
+      - "127.0.0.1:9501:9501/tcp"
+
+    # ========================================================================
+    # Volumes (persistent data)
+    # ========================================================================
+    volumes:
+      # Persistent model storage
+      - ainos-models:/var/lib/ainos/models:rw
+      # Persistent data (contexts, cache)
+      - ainos-data:/var/lib/ainos/data:rw
+      # Persistent logs
+      - ainos-logs:/var/log/ainos:rw
+      # Configuration (read-only)
+      - ./configs/ai-daemon.toml:/etc/ainos/ai-daemon.conf:ro
+      # Certificates (optional)
+      - ./certs:/etc/ainos/certs:ro
+      # D-Bus socket (for system bus access)
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket:ro
+      # Runtime directory (shared with host)
+      - ainos-runtime:/var/run/ainos:rw
+
+    # ========================================================================
+    # Environment Variables
+    # ========================================================================
+    environment:
+      # Logging
+      - RUST_LOG=${RUST_LOG:-info,ainos=debug}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+
+      # Daemon configuration
+      - AINOS_HOME=/var/lib/ainos
+      - AINOS_CONFIG_DIR=/etc/ainos
+      - AINOS_DATA_DIR=/var/lib/ainos/data
+      - AINOS_LOG_DIR=/var/log/ainos
+      - AINOS_RUNTIME_DIR=/var/run/ainos
+      - AINOS_MODELS_DIR=/var/lib/ainos/models
+      - AINOS_CACHE_DIR=/var/lib/ainos/cache
+
+      # Cloud API (override via .env file)
+      - AINOS_CLOUD_API_URL=${AINOS_CLOUD_API_URL:-}
+      - AINOS_CLOUD_API_KEY=${AINOS_CLOUD_API_KEY:-}
+      - AINOS_CLOUD_MODEL=${AINOS_CLOUD_MODEL:-gpt-5.6-sol}
+
+      # Resource limits (override via .env file)
+      - AINOS_MEMORY_MAX=${AINOS_MEMORY_MAX:-8G}
+      - AINOS_CPU_QUOTA=${AINOS_CPU_QUOTA:-80%}
+      - AINOS_MAX_CONCURRENT_INFERENCES=${AINOS_MAX_CONCURRENT_INFERENCES:-2}
+      - AINOS_MODEL_CACHE_SIZE_MB=${AINOS_MODEL_CACHE_SIZE_MB:-4096}
+
+      # Authentication
+      - AINOS_AUTH_ENABLED=${AINOS_AUTH_ENABLED:-false}
+      - AINOS_AUTH_TOKEN=${AINOS_AUTH_TOKEN:-}
+
+      # TLS
+      - AINOS_TLS_ENABLED=${AINOS_TLS_ENABLED:-false}
+      - AINOS_TLS_CERT_PATH=/etc/ainos/certs/server.crt
+      - AINOS_TLS_KEY_PATH=/etc/ainos/certs/server.key
+
+      # Thermal/Power management
+      - AINOS_POWER_MODE=${AINOS_POWER_MODE:-balanced}
+      - AINOS_THERMAL_MONITOR_INTERVAL_MS=${AINOS_THERMAL_MONITOR_INTERVAL_MS:-2000}
+
+    # ========================================================================
+    # Health Check
+    # ========================================================================
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo '{\"type\":\"Status\"}' | timeout 5 nc 127.0.0.1 9500 | grep -q StatusResponse || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    # ========================================================================
+    # Security & Capabilities
+    # ========================================================================
+    cap_add:
+      # Required for setting scheduling priority
+      - SYS_NICE
+      # Required for network checks (ICMP)
+      - NET_RAW
+      # Required for memory locking
+      - IPC_LOCK
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=unconfined
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+      - /var/run/ainos:size=10M
+    user: "1000:1000"
+
+    # ========================================================================
+    # Network Configuration
+    # ========================================================================
+    networks:
+      - ainos-net
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    dns_search: ""
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # ========================================================================
+    # Logging
+    # ========================================================================
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "{{.Name}}/{{.ID}}"
+
+    # ========================================================================
+    # Labels
+    # ========================================================================
+    labels:
+      app: ainos-daemon
+      version: "1.0.0"
+      maintainer: "AinosOS Developers <devel@ainos.org>"
+      description: "AinosOS AI Daemon - Native AI System Service"
+
+    # ========================================================================
+    # Stop / Restart
+    # ========================================================================
+    stop_grace_period: 30s
+    stop_signal: SIGTERM
+    restart: unless-stopped
+    stdin_open: false
+    tty: false
+
+  # ==========================================================================
+  # Web Panel (optional, nginx)
+  # ==========================================================================
   web-panel:
     image: nginx:alpine
     container_name: ainos-web
-    ports:
-      - "9501:80"
-    volumes:
-      - ./system-services/web-panel:/usr/share/nginx/html:ro
     profiles:
       - web
+      - full
+    ports:
+      - "127.0.0.1:9501:80/tcp"
+    volumes:
+      - ./system-services/web-panel:/usr/share/nginx/html:ro
+      - ./configs/nginx/ainos.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      ai-daemon:
+        condition: service_healthy
+    networks:
+      - ainos-net
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 60s
+      timeout: 5s
+      retries: 2
+
+  # ==========================================================================
+  # Redis Cache (optional, for multi-instance caching)
+  # ==========================================================================
+  redis-cache:
+    image: redis:7-alpine
+    container_name: ainos-cache
+    profiles:
+      - cache
+      - full
+    ports:
+      - "127.0.0.1:6379:6379/tcp"
+    volumes:
+      - ainos-cache:/data:rw
+    networks:
+      - ainos-net
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+
+# ============================================================================
+# Shared Volumes
+# ============================================================================
+volumes:
+  ainos-cache:
+    driver: local
+    name: ainos-cache
+  ainos-runtime:
+    driver: local
+    name: ainos-runtime
