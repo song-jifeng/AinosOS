@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ainos_i18n"
+version = "1.0.0"
+description = "AinosOS Internationalization (i18n) and Localization (l10n) Framework"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "AinosOS Internationalization Team", email = "i18n@ainos.io"},
+]
+keywords = ["i18n", "l10n", "internationalization", "localization", "translation", "ainos"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Internationalization",
+    "Topic :: Software Development :: Localization",
+]
+
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+yaml = ["pyyaml>=6.0"]
+database = ["sqlite3"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "mypy>=1.0",
+    "ruff>=0.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/ainos/i18n"
+Repository = "https://github.com/ainos/i18n"
+Documentation = "https://ainos-i18n.readthedocs.io"
+
+[project.scripts]
+ainos-i18n-extract = "ainos_i18n.tools.extract:main"
+ainos-i18n-compile = "ainos_i18n.tools.compile:main"
+ainos-i18n-validate = "ainos_i18n.tools.validate:main"
+ainos-i18n-sync = "ainos_i18n.tools.sync:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+disallow_untyped_defs = true
+disallow_any_unimported = false
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+select = ["E", "F", "W", "I", "N"]
+ignore = ["E501"]
+fix = true
+
+[tool.coverage.run]
+source = ["ainos_i18n"]
+omit = ["*/tests/*", "*/setup.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "logger.",
+]

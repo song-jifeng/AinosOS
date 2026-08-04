@@ -1,0 +1,259 @@
+# Ainos Performance Benchmark Suite Configuration
+# ================================================
+
+# Global settings
+global:
+  project_name: "Ainos Performance Benchmark Suite"
+  version: "1.0.0"
+  default_timeout: 300  # seconds
+  default_warmup_iterations: 10
+  default_benchmark_iterations: 100
+  result_format: "sqlite"  # sqlite, json, csv
+  log_level: "INFO"
+  output_dir: "reports/output"
+  data_dir: "data"
+
+# Statistical analysis
+statistics:
+  percentiles: [50, 75, 90, 95, 99, 99.9]
+  significance_level: 0.05
+  outlier_removal: true
+  outlier_z_score_threshold: 3.0
+  confidence_interval: 0.95
+  max_samples: 10000
+  min_samples: 10
+
+# Micro-benchmarks
+micro:
+  matrix_mul:
+    enabled: true
+    sizes: [64, 128, 256, 512, 1024, 2048]
+    iterations: 30
+    warmup: 5
+    dtype: "float64"
+    use_blas: true
+    block_size: 32
+    num_threads: null  # null = auto-detect
+
+  memory_bandwidth:
+    enabled: true
+    buffer_sizes: ["1KB", "4KB", "16KB", "64KB", "256KB", "1MB", "4MB", "16MB", "64MB", "256MB"]
+    operations: ["read", "write", "copy", "read_write"]
+    iterations: 20
+    warmup: 5
+    sequential: true
+    random_access_ratio: 0.1
+
+  cache_latency:
+    enabled: true
+    buffer_sizes: ["1KB", "4KB", "16KB", "64KB", "256KB", "1MB", "4MB", "16MB", "64MB"]
+    strides: [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+    iterations: 50
+    warmup: 10
+    access_pattern: "random"
+    prefetch_hint: false
+
+  vector_ops:
+    enabled: true
+    sizes: [1000, 10000, 100000, 1000000, 10000000]
+    operations: ["add", "mul", "dot", "norm", "softmax", "relu", "sigmoid", "convolution"]
+    iterations: 30
+    warmup: 5
+    simd_enabled: true
+    dtype: "float32"
+
+  tcp_throughput:
+    enabled: true
+    message_sizes: [64, 256, 1024, 4096, 16384, 65536, 262144, 1048576]
+    iterations: 20
+    warmup: 5
+    use_ipv6: false
+    socket_buffer_size: 65536
+    nodelay: true
+    bidirectional: false
+
+  json_parse:
+    enabled: true
+    file_sizes: ["1KB", "10KB", "100KB", "1MB", "10MB"]
+    iterations: 50
+    warmup: 10
+    libraries: ["json", "orjson", "ujson", "simdjson"]
+    complexity_levels: ["simple", "nested", "array", "mixed"]
+    schema_validation: false
+
+# Kernel benchmarks
+kernel:
+  syscall_latency:
+    enabled: true
+    syscalls: ["getpid", "gettid", "clock_gettime", "nanosleep", "read", "write", "open", "close", "stat", "mmap"]
+    iterations: 10000
+    warmup: 1000
+    measure_empty: true
+    use_vdso: true
+
+  context_switch:
+    enabled: true
+    methods: ["pipe", "socketpair", "futex", "signal"]
+    thread_counts: [2, 4, 8, 16, 32, 64]
+    iterations: 5000
+    warmup: 500
+    affinity: true
+    measure_voluntary: true
+
+  ipc_throughput:
+    enabled: true
+    methods: ["pipe", "fifo", "unix_socket", "tcp_socket", "shared_memory", "message_queue", "eventfd"]
+    message_sizes: [64, 256, 1024, 4096, 16384, 65536]
+    iterations: 1000
+    warmup: 100
+    bidirectional: false
+    sync_mode: "blocking"
+
+  memory_alloc:
+    enabled: true
+    allocators: ["malloc", "calloc", "realloc", "aligned_alloc"]
+    sizes: [16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576]
+    patterns: ["single", "sequential", "strided", "random"]
+    iterations: 10000
+    warmup: 1000
+    thread_safety: true
+    peak_memory: true
+
+# AI benchmarks
+ai:
+  inference_latency:
+    enabled: true
+    model_types: ["bert-base-uncased", "gpt2", "resnet50", "vit-base-patch16-224", "whisper-tiny"]
+    batch_sizes: [1, 2, 4, 8, 16, 32]
+    sequence_lengths: [32, 64, 128, 256, 512]
+    iterations: 100
+    warmup: 10
+    precision: "fp32"  # fp32, fp16, int8
+    device: "cpu"  # cpu, cuda, mps
+    provider: "onnxruntime"  # onnxruntime, pytorch, tensorrt
+
+  inference_throughput:
+    enabled: true
+    model_types: ["bert-base-uncased", "gpt2", "resnet50"]
+    batch_sizes: [1, 4, 16, 32, 64, 128, 256]
+    duration_seconds: 30
+    warmup_seconds: 5
+    precision: "fp32"
+    device: "cpu"
+    max_concurrent_requests: 8
+    provider: "pytorch"
+
+  embedding_speed:
+    enabled: true
+    embedders: ["sentence-transformers/all-MiniLM-L6-v2", "text-embedding-ada-002", "BAAI/bge-small-en-v1.5"]
+    batch_sizes: [1, 8, 32, 64, 128]
+    text_lengths: [16, 64, 256, 512, 1024]
+    iterations: 50
+    warmup: 5
+    normalize_embeddings: true
+    provider: "sentence-transformers"
+
+  search_latency:
+    enabled: true
+    index_types: ["flat", "ivf_flat", "ivf_pq", "hnsw", "hnsw_pq", "annoy"]
+    dimensions: [128, 384, 768, 1024, 1536]
+    dataset_sizes: [10000, 100000, 1000000, 10000000]
+    top_k: [1, 10, 50, 100]
+    queries: 1000
+    build_timeout: 600
+    recall_at_k: [1, 10, 50]
+
+  model_load:
+    enabled: true
+    model_types: ["bert-base-uncased", "gpt2", "resnet50", "vit-base-patch16-224"]
+    formats: ["pytorch", "onnx", "saved_model"]
+    iterations: 10
+    warmup: 2
+    measure_memory: true
+    device: "cpu"
+
+# SDK benchmarks
+sdk:
+  sdk_latency:
+    enabled: true
+    sdks: ["python", "nodejs", "go", "rust", "java"]
+    operations: ["init", "completion", "embedding", "chat"]
+    model_sizes: ["small", "medium", "large"]
+    iterations: 50
+    warmup: 10
+    endpoint: "http://localhost:8000"
+    timeout_seconds: 60
+
+  sdk_throughput:
+    enabled: true
+    sdks: ["python", "nodejs", "go", "rust", "java"]
+    concurrent_requests: [1, 4, 8, 16, 32, 64]
+    duration_seconds: 30
+    warmup_seconds: 5
+    operations: ["completion", "embedding"]
+    target_rps: null
+
+  sdk_memory:
+    enabled: true
+    sdks: ["python", "nodejs", "go", "rust", "java"]
+    operations: ["init", "idle", "completion", "embedding"]
+    iterations: 10
+    track_rss: true
+    track_vms: true
+    track_gc: true
+
+# Reports
+reports:
+  html:
+    enabled: true
+    template: "default"
+    include_charts: true
+    include_tables: true
+    theme: "light"
+    output_file: "benchmark_report.html"
+
+  json:
+    enabled: true
+    pretty_print: true
+    include_metadata: true
+    include_raw_data: true
+    output_file: "benchmark_data.json"
+
+  charts:
+    enabled: true
+    format: "png"
+    dpi: 150
+    width: 12
+    height: 8
+    style: "seaborn-v0_8"
+    color_palette: "viridis"
+    include_trend_lines: true
+    include_error_bars: true
+
+# Results storage
+storage:
+  database:
+    type: "sqlite"
+    path: "data/benchmark_results.db"
+    pool_size: 5
+    timeout: 30
+    wal_mode: true
+
+  history:
+    max_entries: 1000
+    auto_cleanup: true
+    retention_days: 365
+    archive_after: 90
+
+  export:
+    formats: ["csv", "json", "parquet"]
+    compression: "gzip"
+
+# System info
+system:
+  collect_cpu_info: true
+  collect_memory_info: true
+  collect_disk_info: true
+  collect_network_info: true
+  collect_gpu_info: true
+  collect_kernel_info: true

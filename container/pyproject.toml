@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "ainos-container"
+version = "0.1.0"
+description = "AI-optimized container runtime for AinosOS"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Ainos Team", email = "dev@ainos.io"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Operating System",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "psutil>=5.9.0",
+    "httpx>=0.25.0",
+    "pydantic>=2.0.0",
+    "pyyaml>=6.0",
+    "orjson>=3.9.0",
+    "aiofiles>=23.2.0",
+    "watchdog>=3.0.0",
+    "numpy>=1.25.0",
+]
+optional-dependencies = {
+    "gpu": [
+        "pynvml>=11.5.0",
+    ],
+    "dev": [
+        "pytest>=7.4.0",
+        "pytest-asyncio>=0.21.0",
+        "pytest-cov>=4.1.0",
+        "mypy>=1.5.0",
+        "ruff>=0.1.0",
+    ],
+}
+
+[project.urls]
+Homepage = "https://ainos.io"
+Source = "https://github.com/ainos/container"
+
+[tool.setuptools.packages.find]
+include = ["src/*", "ai/*"]
+where = ["."]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.json", "*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests that require GPU (deselect with '-m \"not gpu\"')",
+    "integration: marks integration tests",
+]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+disallow_untyped_defs = true
+disallow_any_unimported = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ARG"]
+ignore = ["E501"]
+fix = true
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401", "E402"]
+"tests/*.py" = ["S101", "PLR2004"]
+
+[tool.coverage.run]
+source = ["src", "ai"]
+branch = true

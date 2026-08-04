@@ -1,11 +1,11 @@
-"""AinosOS AI Test Generator - Generators Package."""
+"""AinosOS AI Test Generator - Generators Package.
+
+Contains output-format-specific test generators that produce test code
+in pytest, unittest, doctest, cmocka, and libtest formats.
+"""
 
 from .python_generator import PythonGenerator
-from .rust_generator import RustGenerator
-from .c_generator import CGenerator
 
 __all__ = [
     "PythonGenerator",
-    "RustGenerator",
-    "CGenerator",
 ]

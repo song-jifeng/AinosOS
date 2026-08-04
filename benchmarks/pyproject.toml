@@ -1,0 +1,156 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel>=0.41.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "ainos-benchmarks"
+version = "1.0.0"
+description = "Ainos Performance Benchmark Suite - Comprehensive system and AI benchmarking"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Ainos Performance Engineering", email = "engineering@ainos.ai" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Benchmark",
+    "Topic :: Software Development :: Testing",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "psutil>=5.9.0",
+    "pyyaml>=6.0",
+    "matplotlib>=3.6.0",
+    "seaborn>=0.12.0",
+    "pandas>=1.5.0",
+    "orjson>=3.8.0",
+    "python-rapidjson>=1.10",
+    "rich>=13.0.0",
+    "click>=8.1.0",
+    "humanize>=4.6.0",
+    "pydantic>=2.0.0",
+    "tabulate>=0.9.0",
+    "dataclasses-json>=0.5.0",
+]
+
+[project.optional-dependencies]
+ai = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "onnxruntime>=1.15.0",
+    "sentence-transformers>=2.2.0",
+    "faiss-cpu>=1.7.0",
+    "annoy>=1.17.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-benchmark>=4.0.0",
+    "mypy>=1.5.0",
+    "ruff>=0.1.0",
+    "pre-commit>=3.3.0",
+]
+docs = [
+    "sphinx>=6.2.0",
+    "sphinx-rtd-theme>=1.2.0",
+    "sphinx-autodoc-typehints>=1.23.0",
+]
+all = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "onnxruntime>=1.15.0",
+    "sentence-transformers>=2.2.0",
+    "faiss-cpu>=1.7.0",
+    "annoy>=1.17.0",
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-benchmark>=4.0.0",
+    "mypy>=1.5.0",
+    "ruff>=0.1.0",
+    "pre-commit>=3.3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/ainos/benchmarks"
+BugTracker = "https://github.com/ainos/benchmarks/issues"
+Documentation = "https://ainos-benchmarks.readthedocs.io"
+
+[project.scripts]
+ainos-bench = "benchmarks.runner:main"
+ainos-bench-report = "benchmarks.reports.report_generator:main"
+
+[tool.setuptools.packages.find]
+include = ["benchmarks", "benchmarks.*"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+allow_untyped_defs = false
+disallow_any_unimported = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*", "benchmark_*"]
+addopts = "-v --tb=short --strict-markers"
+markers = [
+    "micro: micro-benchmark tests",
+    "kernel: kernel benchmark tests",
+    "ai: AI benchmark tests",
+    "sdk: SDK benchmark tests",
+    "slow: slow tests that may take minutes",
+    "integration: integration tests",
+]
+
+[tool.coverage.run]
+source = ["benchmarks"]
+omit = ["*/tests/*", "*/__pycache__/*", "*/setup.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.coverage.html]
+directory = "coverage_html"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ARG", "PTH", "PD", "PL", "RUF"]
+ignore = ["E501", "SIM117", "PLR0913", "PLR0911", "PLR0912", "PLR0904", "PLR0915"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*" = ["S101", "PLR2004", "ANN001", "ANN201"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"

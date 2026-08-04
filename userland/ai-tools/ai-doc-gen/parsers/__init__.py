@@ -7,15 +7,11 @@ extracting structured documentation data from source files.
 from .python_parser import PythonParser
 from .c_parser import CParser
 from .rust_parser import RustParser
-from .java_parser import JavaParser
-from .go_parser import GoParser
 
 __all__ = [
     "PythonParser",
     "CParser",
     "RustParser",
-    "JavaParser",
-    "GoParser",
 ]
 
 # Parser registry: maps language identifiers to parser classes
@@ -26,9 +22,6 @@ PARSER_REGISTRY = {
     "h": CParser,
     "rust": RustParser,
     "rs": RustParser,
-    "java": JavaParser,
-    "go": GoParser,
-    "golang": GoParser,
 }
 
 
