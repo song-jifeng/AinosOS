@@ -1,0 +1,1 @@
+"""Tests for the AI-Powered Code Refactoring Assistant."""
