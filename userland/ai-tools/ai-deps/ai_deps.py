@@ -3814,6 +3814,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Setup logging
     _setup_logging(verbose=getattr(args, "verbose", False))
 
+    # If no command specified, default to analyze
+    if not args.command:
+        logger.debug("No command specified, defaulting to 'analyze'")
+        args.command = "analyze"
+        args.format = "json"
+        args.output = None
+        args.max_nodes = 100
+        args.show_external = True
+
     try:
         if args.command == "analyze":
             _cmd_analyze(args)

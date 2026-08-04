@@ -1,0 +1,12 @@
+// AI 编译器示例 - Hello World
+// 文件: hello.ai
+
+export fn greet(name: string) {
+    print("Hello, " + name + "!");
+}
+
+fn main() -> int {
+    let message: string = "World";
+    greet(message);
+    return 0;
+}

@@ -1,0 +1,77 @@
+name: "BGE-M3"
+description: "BAAI General Embedding Multilingual V3 - 多语言嵌入模型，支持稠密、稀疏和多向量检索"
+version: "1.0.0"
+model_type: "embedding"
+architecture: "xlm-roberta"
+context_length: 8192
+parameters: "568M"
+
+# 嵌入维度
+embedding_dimensions:
+  dense: 1024
+  sparse: 250000
+  multi_vector: 256
+
+# 支持的语言
+languages:
+  - "zh"
+  - "en"
+  - "ja"
+  - "ko"
+  - "fr"
+  - "de"
+  - "es"
+  - "ru"
+  - "ar"
+  - "th"
+
+# 池化方式
+pooling: "cls"
+
+# 归一化
+normalize: true
+
+# 量化选项
+quantization:
+  - type: "Q8_0"
+    size_gb: 1.1
+  - type: "Q4_K_M"
+    size_gb: 0.6
+  - type: "Q4_0"
+    size_gb: 0.5
+
+# 推荐设置
+recommended:
+  batch_size: 64
+  num_threads: 4
+  query_instruction: "Represent this sentence for searching relevant passages: "
+  passage_instruction: ""
+
+# 特殊 Token
+special_tokens:
+  cls_token: "<s>"
+  sep_token: "</s>"
+  pad_token: "<pad>"
+  unk_token: "<unk>"
+  mask_token: "<mask>"
+
+# 停止 Token
+stop_tokens: []
+
+# 所需内存
+required_memory:
+  min_gb: 1.0
+  recommended_gb: 2.0
+  max_gb: 4.0
+
+# 性能指标
+performance:
+  mtEB_score: 0.72
+  retrieval_recall: 0.85
+  reranking_ndcg: 0.78
+
+# 文件信息
+file_info:
+  format: "gguf"
+  recommended_file: "bge-m3-q4_k_m.gguf"
+  sha256: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b"

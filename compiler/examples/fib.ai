@@ -1,0 +1,36 @@
+// AI 编译器示例 - 斐波那契数列
+// 文件: fib.ai
+
+// 递归计算斐波那契数列
+fn fibonacci(n: int) -> int {
+    if (n <= 1) {
+        return n;
+    }
+    return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+// 迭代计算斐波那契数列（更高效）
+fn fibonacci_iter(n: int) -> int {
+    if (n <= 1) {
+        return n;
+    }
+    let a: int = 0;
+    let b: int = 1;
+    let i: int = 2;
+    while (i <= n) {
+        let temp: int = a + b;
+        a = b;
+        b = temp;
+        i = i + 1;
+    }
+    return b;
+}
+
+fn main() -> int {
+    let n: int = 20;
+    let result_rec: int = fibonacci(n);
+    let result_iter: int = fibonacci_iter(n);
+    print("fib(" + n + ") = " + result_rec + " (recursive)");
+    print("fib(" + n + ") = " + result_iter + " (iterative)");
+    return 0;
+}

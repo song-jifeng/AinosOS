@@ -1,0 +1,85 @@
+name: "LLaMA 3.1 70B"
+description: "Meta LLaMA 3.1 70B - 高性能大语言模型，适合复杂推理和长文本处理"
+version: "3.1.0"
+model_type: "llm"
+architecture: "llama"
+context_length: 131072
+parameters: "70B"
+
+architecture_detail:
+  num_layers: 80
+  num_heads: 64
+  num_kv_heads: 8
+  hidden_size: 8192
+  intermediate_size: 28672
+  vocab_size: 128256
+  rope_theta: 500000.0
+  norm_type: "rms_norm"
+  activation: "silu"
+
+tokenizer:
+  type: "tiktoken"
+  vocab_size: 128256
+  add_bos: true
+  add_eos: true
+
+quantization:
+  - type: "Q8_0"
+    size_gb: 70.0
+  - type: "Q6_K"
+    size_gb: 52.0
+  - type: "Q5_K_M"
+    size_gb: 45.0
+  - type: "Q5_0"
+    size_gb: 43.0
+  - type: "Q4_K_M"
+    size_gb: 38.0
+  - type: "Q4_K_S"
+    size_gb: 35.0
+  - type: "Q4_0"
+    size_gb: 34.0
+  - type: "Q3_K_M"
+    size_gb: 28.0
+  - type: "Q2_K"
+    size_gb: 22.0
+
+recommended:
+  temperature: 0.6
+  top_p: 0.9
+  top_k: 40
+  repeat_penalty: 1.1
+  num_threads: 16
+  batch_size: 16
+  context_size: 4096
+  flash_attention: true
+  gpu_layers: 60
+  tensor_parallel: 2
+
+special_tokens:
+  bos_token: "<|begin_of_text|>"
+  eos_token: "<|end_of_text|>"
+  pad_token: "<|end_of_text|>"
+  system_token: "<|start_header_id|>system<|end_header_id|>"
+  user_token: "<|start_header_id|>user<|end_header_id|>"
+  assistant_token: "<|start_header_id|>assistant<|end_header_id|>"
+
+stop_tokens:
+  - "<|eot_id|>"
+  - "<|end_of_text|>"
+
+required_memory:
+  min_gb: 28.0
+  recommended_gb: 48.0
+  max_gb: 80.0
+
+performance:
+  mmlu: 0.83
+  hellaswag: 0.88
+  arc_challenge: 0.73
+  truthfulqa: 0.52
+  tokens_per_second: 12
+
+file_info:
+  format: "gguf"
+  recommended_file: "llama-3.1-70b-q4_k_m.gguf"
+  sha256: "f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7"

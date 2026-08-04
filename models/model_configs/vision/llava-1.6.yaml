@@ -1,0 +1,79 @@
+name: "LLaVA 1.6"
+description: "LLaVA 1.6 (Vicuna-7B) - 多模态视觉语言模型，支持图像理解和对话"
+version: "1.6.0"
+model_type: "vision"
+architecture: "llava"
+context_length: 4096
+parameters: "7B"
+
+# 视觉编码器
+vision_encoder:
+  type: "clip"
+  model: "openai/clip-vit-large-patch14-336"
+  image_size: 336
+  patch_size: 14
+  vision_layers: 24
+
+# 投影层
+projection:
+  type: "mlp"
+  depth: 2
+
+# 支持的任务
+tasks:
+  - "image_captioning"
+  - "visual_question_answering"
+  - "image_understanding"
+  - "document_understanding"
+  - "ocr"
+
+# 量化选项
+quantization:
+  - type: "Q8_0"
+    size_gb: 8.5
+  - type: "Q4_K_M"
+    size_gb: 5.0
+  - type: "Q4_K_S"
+    size_gb: 4.5
+  - type: "Q5_K_M"
+    size_gb: 6.0
+
+# 推荐设置
+recommended:
+  temperature: 0.2
+  top_p: 0.9
+  max_tokens: 1024
+  num_threads: 8
+  image_detail: "high"
+
+# 特殊 Token
+special_tokens:
+  image_token: "<image>"
+  bos_token: "<s>"
+  eos_token: "</s>"
+  pad_token: "</s>"
+
+# 停止 Token
+stop_tokens:
+  - "</s>"
+  - "USER:"
+  - "ASSISTANT:"
+
+# 所需内存
+required_memory:
+  min_gb: 6.0
+  recommended_gb: 12.0
+  max_gb: 24.0
+
+# 性能指标
+performance:
+  mmlu: 0.68
+  vqa_score: 0.82
+  textvqa: 0.64
+  gqa: 0.63
+
+# 文件信息
+file_info:
+  format: "gguf"
+  recommended_file: "llava-1.6-7b-q4_k_m.gguf"
+  sha256: "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4"

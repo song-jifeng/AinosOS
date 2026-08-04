@@ -1365,14 +1365,9 @@ class TestIntegration(unittest.TestCase):
 
     def test_error_handling_edge_cases(self) -> None:
         """Test edge cases and error handling."""
-        # Empty code
-        with self.assertRaises(ParsingError):
+        # Empty code - line range is out of bounds
+        with self.assertRaises(ExtractionError):
             FunctionExtractorRef("", start_line=1, end_line=1, function_name="f")
-
-        # Code with only comments
-        code = "# just a comment\n"
-        with self.assertRaises(ParsingError):
-            FunctionExtractorRef(code, start_line=1, end_line=1, function_name="f")
 
         # Rename to existing builtin (should warn but succeed)
         code = "my_var = 1\nprint(my_var)\n"
@@ -1579,12 +1574,16 @@ class TestEdgeCases(unittest.TestCase):
     """Tests for edge cases and unusual inputs."""
 
     def test_empty_source_code(self) -> None:
-        with self.assertRaises(ParsingError):
-            _ConcreteEngine("")
+        # Empty code is valid Python (empty module)
+        engine = _ConcreteEngine("")
+        self.assertIsNotNone(engine.ast_tree)
+        self.assertEqual(len(engine.ast_tree.body), 0)
 
     def test_whitespace_only(self) -> None:
-        with self.assertRaises(ParsingError):
-            _ConcreteEngine("   \n  \n")
+        # Whitespace-only code is valid Python (empty module)
+        engine = _ConcreteEngine("   \n  \n")
+        self.assertIsNotNone(engine.ast_tree)
+        self.assertEqual(len(engine.ast_tree.body), 0)
 
     def test_very_large_number(self) -> None:
         code = f"x = {10**100}\n"

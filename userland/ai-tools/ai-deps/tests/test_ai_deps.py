@@ -1259,9 +1259,8 @@ class TestCLI:
 
     def test_version(self) -> None:
         """Test --version flag."""
-        with pytest.raises(SystemExit) as exc:
-            main(["--version"])
-        assert exc.value.code == 0
+        exit_code = main(["--version"])
+        assert exit_code == 0
 
     def test_verbose(self, temp_project: Path) -> None:
         """Test verbose mode."""

@@ -1,0 +1,75 @@
+name: "E5-Mistral"
+description: "E5 Embedding V2 Mistral - 基于 Mistral 的高质量嵌入模型"
+version: "1.0.0"
+model_type: "embedding"
+architecture: "mistral"
+context_length: 4096
+parameters: "7B"
+
+# 嵌入维度
+embedding_dimensions:
+  dense: 4096
+
+# 支持的语言
+languages:
+  - "en"
+  - "zh"
+  - "ja"
+  - "de"
+  - "fr"
+  - "es"
+
+# 池化方式
+pooling: "last_token"
+
+# 归一化
+normalize: true
+
+# 量化选项
+quantization:
+  - type: "Q8_0"
+    size_gb: 7.0
+  - type: "Q4_K_M"
+    size_gb: 4.1
+  - type: "Q4_K_S"
+    size_gb: 3.8
+  - type: "Q5_K_M"
+    size_gb: 5.0
+  - type: "Q3_K_M"
+    size_gb: 3.2
+
+# 推荐设置
+recommended:
+  batch_size: 32
+  num_threads: 8
+  query_instruction: "query: "
+  passage_instruction: "passage: "
+  temperature: 1.0
+
+# 特殊 Token
+special_tokens:
+  bos_token: "<s>"
+  eos_token: "</s>"
+  pad_token: "<pad>"
+  unk_token: "<unk>"
+
+# 停止 Token
+stop_tokens: []
+
+# 所需内存
+required_memory:
+  min_gb: 4.0
+  recommended_gb: 8.0
+  max_gb: 16.0
+
+# 性能指标
+performance:
+  mtEB_score: 0.66
+  beir_ndcg: 0.55
+  retrieval_recall: 0.80
+
+# 文件信息
+file_info:
+  format: "gguf"
+  recommended_file: "e5-mistral-7b-q4_k_m.gguf"
+  sha256: "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3"

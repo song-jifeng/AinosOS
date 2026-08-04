@@ -1,0 +1,74 @@
+name: "OWL-ViT"
+description: "OWL-ViT (Open-World Localization Vision Transformer) - 开放词汇目标检测模型"
+version: "1.0.0"
+model_type: "vision"
+architecture: "owlvit"
+context_length: 1024
+parameters: "1.5B"
+
+# 视觉编码器
+vision_encoder:
+  type: "vit"
+  model: "google/owlvit-base-patch32"
+  image_size: 768
+  patch_size: 32
+  vision_layers: 12
+
+# 文本编码器
+text_encoder:
+  type: "clip-text"
+  model: "google/owlvit-base-patch32"
+  text_layers: 12
+
+# 支持的任务
+tasks:
+  - "object_detection"
+  - "open_vocabulary_detection"
+  - "phrase_grounding"
+  - "visual_search"
+
+# 支持的类别
+max_classes: 100
+
+# 量化选项
+quantization:
+  - type: "Q8_0"
+    size_gb: 2.0
+  - type: "Q4_K_M"
+    size_gb: 1.2
+  - type: "Q4_0"
+    size_gb: 1.0
+
+# 推荐设置
+recommended:
+  batch_size: 8
+  num_threads: 4
+  confidence_threshold: 0.3
+  iou_threshold: 0.5
+
+# 特殊 Token
+special_tokens:
+  bos_token: "<|startoftext|>"
+  eos_token: "<|endoftext|>"
+  pad_token: "<|pad|>"
+
+# 停止 Token
+stop_tokens: []
+
+# 所需内存
+required_memory:
+  min_gb: 2.0
+  recommended_gb: 4.0
+  max_gb: 8.0
+
+# 性能指标
+performance:
+  map_score: 0.42
+  recall: 0.65
+  precision: 0.55
+
+# 文件信息
+file_info:
+  format: "gguf"
+  recommended_file: "owlvit-base-q4_k_m.gguf"
+  sha256: "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5"
