@@ -921,7 +921,17 @@ class Parser:
                 element_type = self._parse_type()
                 shape = []
                 while self._match(TokenType.COMMA):
-                    if self._check(TokenType.INTEGER):
+                    if self._check(TokenType.LBRACKET):
+                        # 形状数组 [d1, d2, ...]
+                        self._advance()  # skip [
+                        while not self._check(TokenType.RBRACKET) and not self._check(TokenType.EOF):
+                            if self._check(TokenType.INTEGER):
+                                token = self._advance()
+                                shape.append(IntegerLiteral(token.value, token, token.line, token.column, self.file))
+                            if not self._match(TokenType.COMMA):
+                                break
+                        self._expect(TokenType.RBRACKET, "tensor 形状数组需要 ]")
+                    elif self._check(TokenType.INTEGER):
                         token = self._advance()
                         shape.append(IntegerLiteral(token.value, token, token.line, token.column, self.file))
                     else:

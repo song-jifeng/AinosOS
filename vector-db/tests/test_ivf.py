@@ -308,6 +308,24 @@ class TestIVFIndex:
 class TestIVFEdgeCases:
     """Edge case tests for IVFIndex."""
 
+    @pytest.fixture
+    def config(self):
+        return IndexConfig(
+            name="test_ivf",
+            dimension=64,
+            index_type=IndexType.IVF,
+            metric=MetricType.COSINE,
+            nlist=5,
+            nprobe=2,
+        )
+
+    @pytest.fixture
+    def vectors(self):
+        rng = np.random.RandomState(42)
+        vecs = rng.randn(200, 64).astype(np.float32)
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        return vecs / np.maximum(norms, 1e-12)
+
     def test_single_cluster(self):
         """Test IVF with just 1 cluster."""
         config = IndexConfig(

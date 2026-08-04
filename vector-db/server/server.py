@@ -194,13 +194,7 @@ class VectorDatabaseServer:
         )
         self._accept_thread.start()
 
-        # Worker threads
-        for i in range(self.config.max_workers):
-            worker = threading.Thread(
-                target=self._worker_loop, name=f"worker-{i}", daemon=True
-            )
-            worker.start()
-            self._worker_threads.append(worker)
+        # Client threads are created per-connection in _accept_loop
 
         # Heartbeat thread
         self._heartbeat_thread = threading.Thread(
@@ -267,6 +261,16 @@ class VectorDatabaseServer:
                 print(f"New client connection from {address[0]}:{address[1]} "
                       f"(client_id={client_id})")
 
+                # Spawn a thread to handle this client
+                client_thread = threading.Thread(
+                    target=self._client_handler,
+                    args=(client_id, client),
+                    name=f"client-{client_id}",
+                    daemon=True
+                )
+                client_thread.start()
+                self._worker_threads.append(client_thread)
+
             except socket.timeout:
                 continue
             except OSError:
@@ -277,28 +281,22 @@ class VectorDatabaseServer:
                 print(f"Error in accept loop: {e}")
                 break
 
-    def _worker_loop(self):
-        """Worker thread loop for processing requests."""
-        while self._running and not self._stop_event.is_set():
-            # Check for timed-out clients
-            self._cleanup_stale_clients()
+    def _client_handler(self, client_id: int, client: ClientConnection):
+        """Handle a single client connection in a dedicated thread.
 
-            # Process client requests
-            with self._client_lock:
-                client_ids = list(self._clients.keys())
-
-            for client_id in client_ids:
-                if self._stop_event.is_set():
-                    break
-
-                client = self._get_client(client_id)
-                if client is None:
-                    continue
-
+        Args:
+            client_id: Client ID
+            client: Client connection object
+        """
+        try:
+            while self._running and not self._stop_event.is_set() and client.is_alive():
                 try:
                     # Try to receive a request
                     request = client.receive()
                     if request is None:
+                        # Check if client is still alive
+                        if not client.is_alive():
+                            break
                         continue
 
                     # Process the request
@@ -310,13 +308,14 @@ class VectorDatabaseServer:
                     client.send(response)
 
                     # Update metrics
-                    self.metrics.record_operation(
-                        request.method, elapsed, True
-                    )
+                    self.metrics.record_operation(request.method, elapsed, True)
                     self.throughput.record()
 
+                except socket.timeout:
+                    continue
+                except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                    break
                 except Exception as e:
-                    # Error handling
                     if client and not client.closed:
                         error_resp = Protocol.create_error_response(
                             'unknown', ErrorCode.INTERNAL_ERROR, str(e)
@@ -324,11 +323,10 @@ class VectorDatabaseServer:
                         try:
                             client.send(error_resp)
                         except Exception:
-                            self._remove_client(client_id)
-
-            # Brief sleep to prevent busy-waiting
-            if not self._stop_event.is_set():
-                self._stop_event.wait(0.01)
+                            pass
+                    break
+        finally:
+            self._remove_client(client_id)
 
     def _heartbeat_loop(self):
         """Heartbeat thread for keep-alive."""

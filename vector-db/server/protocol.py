@@ -41,7 +41,7 @@ class MessageType(str, Enum):
 @dataclass
 class NDJSONMessage:
     """Base message format for NDJSON protocol."""
-    type: str
+    type: str = ""
     id: Optional[str] = None
     version: str = "1.0"
     timestamp: float = field(default_factory=time.time)

@@ -84,7 +84,7 @@ class AinosPlugin(Plugin):
         self._models: t.List[ModelInfo] = []
         self._loaded_model: t.Optional[ModelInfo] = None
         self._inference_process: t.Any = None
-        self._ainos_home = os.environ.get("AINOS_HOME", os.path.expanduser("~/.ainos"))
+        self._ainos_home = os.environ.get("AINOS_HOME", "D:\\Ainos\\.ainos-data")
 
     def initialize(self) -> None:
         """Initialize the plugin."""

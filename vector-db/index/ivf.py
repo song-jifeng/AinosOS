@@ -252,21 +252,26 @@ class IVFIndex(BaseIndex):
             List of (id, distance) tuples sorted by distance.
         """
         self._check_vector(query_vector)
-        query_vector = query_vector.astype(np.float32).reshape(1, -1)
+        query_vector = query_vector.astype(np.float32)
 
         with self._lock:
-            if not self._centroids is None and self._vector_count == 0:
+            if self._centroids is None or self._vector_count == 0:
                 return []
 
             # Find nearest centroids
             if self.metric_type.name == 'COSINE':
                 q_norm = np.linalg.norm(query_vector)
                 query_normed = query_vector / max(q_norm, 1e-12)
-                centroid_normed = self._centroids / \
-                    np.maximum(self._centroid_norms[:, np.newaxis], 1e-12)
-                centroid_distances = 1.0 - np.dot(centroid_normed, query_normed.T).flatten()
+                if self._centroid_norms is not None:
+                    centroid_normed = self._centroids / \
+                        np.maximum(self._centroid_norms[:, np.newaxis], 1e-12)
+                else:
+                    centroid_norms = np.linalg.norm(self._centroids, axis=1)
+                    centroid_normed = self._centroids / \
+                        np.maximum(centroid_norms[:, np.newaxis], 1e-12)
+                centroid_distances = 1.0 - np.dot(centroid_normed, query_normed).flatten()
             else:
-                diff = self._centroids - query_vector
+                diff = self._centroids - query_vector.reshape(1, -1)
                 centroid_distances = np.sqrt(np.sum(diff ** 2, axis=1))
 
             # Get nprobe nearest centroids
@@ -281,13 +286,13 @@ class IVFIndex(BaseIndex):
                     if self.metric_type.name == 'COSINE':
                         v_norm = np.linalg.norm(vector)
                         q_norm = np.linalg.norm(query_vector)
-                        sim = np.dot(vector, query_vector.T) / \
+                        sim = np.dot(vector, query_vector) / \
                             max(v_norm * q_norm, 1e-12)
                         dist = 1.0 - float(sim)
                     elif self.metric_type.name == 'EUCLIDEAN':
                         dist = float(np.sqrt(np.sum((vector - query_vector) ** 2)))
                     elif self.metric_type.name == 'DOT':
-                        dist = -float(np.dot(vector, query_vector.T))
+                        dist = -float(np.dot(vector, query_vector))
                     elif self.metric_type.name == 'MANHATTAN':
                         dist = float(np.sum(np.abs(vector - query_vector)))
                     else:
@@ -428,6 +433,8 @@ class IVFIndex(BaseIndex):
                 self._centroids = np.load(centroids_path)
                 self._kmeans = KMeans(n_clusters=self.nlist)
                 self._kmeans.centroids = self._centroids
+                if self.metric_type.name == 'COSINE':
+                    self._centroid_norms = np.linalg.norm(self._centroids, axis=1)
 
             # Restore inverted lists
             self._inverted_lists = defaultdict(list)

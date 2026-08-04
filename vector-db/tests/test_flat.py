@@ -262,6 +262,28 @@ class TestFlatIndex:
 class TestFlatIndexEdgeCases:
     """Edge case tests for FlatIndex."""
 
+    @pytest.fixture
+    def config(self):
+        return IndexConfig(
+            name="test_flat",
+            dimension=128,
+            index_type=IndexType.FLAT,
+            metric=MetricType.COSINE,
+        )
+
+    @pytest.fixture
+    def index(self, config):
+        idx = FlatIndex(config)
+        idx.train(np.empty((0, 128)))
+        return idx
+
+    @pytest.fixture
+    def vectors(self):
+        rng = np.random.RandomState(42)
+        vecs = rng.randn(100, 128).astype(np.float32)
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        return vecs / np.maximum(norms, 1e-12)
+
     def test_single_vector(self):
         """Test with a single vector."""
         config = IndexConfig(name="single", dimension=4, metric=MetricType.EUCLIDEAN)

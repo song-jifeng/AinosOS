@@ -276,15 +276,18 @@ class TestClientConnection:
 
     def test_client_creation(self):
         """Test creating a client connection."""
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        import socket as sock_module
         config = ServerConfig()
         db = VectorDatabase()
         handler = RequestHandler(db)
 
-        # We can't fully test without a real connection, but we can test creation
-        with pytest.raises(Exception):
-            client = ClientConnection(sock, ("127.0.0.1", 12345), handler, config)
+        # Create a pair of connected sockets
+        a, b = sock_module.socketpair()
+        client = ClientConnection(a, ("127.0.0.1", 12345), handler, config)
+        assert not client.closed
+        assert client.is_alive()
+        client.close()
+        b.close()
 
 
 class TestServerIntegration:

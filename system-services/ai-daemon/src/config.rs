@@ -91,7 +91,7 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         // 使用环境变量 AINOS_HOME 覆盖默认基路径，默认使用相对路径
         let ainos_home = std::env::var("AINOS_HOME").unwrap_or_else(|_| {
-            if cfg!(windows) { "D:\\Ainos".to_string() } else { "/var/lib/ainos".to_string() }
+            if cfg!(windows) { "D:\\Ainos\\.ainos-data".to_string() } else { "/var/lib/ainos".to_string() }
         });
         let data_dir = format!("{}/data", ainos_home);
         let log_dir = format!("{}/logs", ainos_home);

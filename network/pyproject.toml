@@ -1,0 +1,107 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ainos-network"
+version = "2.1.0"
+description = "AI-Optimized Network Stack - 基于人工智能优化的高性能网络协议栈"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Ainos Network Team", email = "dev@ainos.network"},
+]
+keywords = ["network", "tcp", "udp", "http", "websocket", "ai", "monitoring"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: System :: Networking",
+    "Topic :: System :: Networking :: Monitoring",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "numpy>=1.21.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "flake8>=6.0",
+    "mypy>=1.0",
+    "black>=23.0",
+]
+ai = [
+    "scikit-learn>=1.2",
+    "statsmodels>=0.13",
+]
+monitor = [
+    "psutil>=5.9",
+]
+
+[project.urls]
+Homepage = "https://github.com/ainos/network"
+Documentation = "https://docs.ainos.network"
+Repository = "https://github.com/ainos/network"
+"Bug Tracker" = "https://github.com/ainos/network/issues"
+
+[project.scripts]
+ainos-net = "src.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+markers = [
+    "slow: 慢速测试",
+    "network: 需要网络连接的测试",
+    "integration: 集成测试",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/tests/*", "*/examples/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if __name__ == .__main__.:",
+]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311"]
+include = '\.pyi?$'
+
+[tool.flake8]
+max-line-length = 100
+extend-ignore = ["E501", "E203", "W503"]
+exclude = [".git", "__pycache__", "build", "dist"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+
+[ainos]
+network_version = "2.1.0"
+min_python = "3.9"
+default_config = "config.yaml"

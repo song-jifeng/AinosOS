@@ -2465,6 +2465,11 @@ BUILTIN_HELP: t.Dict[str, str] = {
 
     "yes": """yes: yes [text]
     Repeatedly output a string.""",
+
+    "set": """set: set [-o option] [VAR=value]
+    Set or display shell options and variables.
+    Without arguments, displays all shell variables.
+    Use -o option to set a shell option.""",
 }
 
 

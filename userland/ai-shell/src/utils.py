@@ -847,8 +847,12 @@ def get_home_dir() -> str:
 
 
 def get_config_dir() -> str:
-    """Get the Ainos shell config directory."""
-    return os.path.join(get_home_dir(), ".ainos")
+    """Get the Ainos shell config directory.
+
+    Uses AINOS_HOME environment variable if set (e.g. D:/Ainos/.ainos-data),
+    otherwise falls back to ~/.ainos.
+    """
+    return os.environ.get("AINOS_HOME", os.path.join(get_home_dir(), ".ainos"))
 
 
 def get_data_dir() -> str:
